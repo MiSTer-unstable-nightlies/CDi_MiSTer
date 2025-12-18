@@ -354,7 +354,6 @@ int plm_get_num_video_streams(plm_t *self);
 
 int plm_get_width(plm_t *self);
 int plm_get_height(plm_t *self);
-int32_t plm_get_pixel_aspect_ratio(plm_t *self);
 
 
 // Get the frameperiod of the video stream in frames per second.
@@ -712,7 +711,6 @@ int plm_video_has_header(plm_video_t *self);
 // Get the frameperiod in frames per second.
 
 int32_t plm_video_get_frameperiod(plm_video_t *self);
-int32_t plm_video_get_pixel_aspect_ratio(plm_video_t *self);
 
 
 // Get the display width/height.
@@ -923,12 +921,6 @@ int plm_get_height(plm_t *self) {
 int32_t plm_get_frameperiod(plm_t *self) {
 	return (plm_init_decoders(self) && self->video_decoder)
 		? plm_video_get_frameperiod(self->video_decoder)
-		: 0;
-}
-
-int32_t plm_get_pixel_aspect_ratio(plm_t *self) {
-	return (plm_init_decoders(self) && self->video_decoder)
-		? plm_video_get_pixel_aspect_ratio(self->video_decoder)
 		: 0;
 }
 
@@ -1519,25 +1511,6 @@ static const int PLM_START_USER_DATA = 0xB2;
 #define PLM_START_IS_SLICE(c) \
 	(c >= PLM_START_SLICE_FIRST && c <= PLM_START_SLICE_LAST)
 
-#define FRACTIONAL_ASPECT_RATIO(x) (256.0 * x)
-
-static const float PLM_VIDEO_PIXEL_ASPECT_RATIO[] = {
-	FRACTIONAL_ASPECT_RATIO(1.0000), /* square pixels */
-	FRACTIONAL_ASPECT_RATIO(0.6735), /* 3:4? */
-	FRACTIONAL_ASPECT_RATIO(0.7031), /* MPEG-1 / MPEG-2 video encoding divergence? */
-	FRACTIONAL_ASPECT_RATIO(0.7615), 
-	FRACTIONAL_ASPECT_RATIO(0.8055),
-	FRACTIONAL_ASPECT_RATIO(0.8437),
-	FRACTIONAL_ASPECT_RATIO(0.8935),
-	FRACTIONAL_ASPECT_RATIO(0.9157),
-	FRACTIONAL_ASPECT_RATIO(0.9815),
-	FRACTIONAL_ASPECT_RATIO(1.0255),
-	FRACTIONAL_ASPECT_RATIO(1.0695),
-	FRACTIONAL_ASPECT_RATIO(1.0950),
-	FRACTIONAL_ASPECT_RATIO(1.1575),
-	FRACTIONAL_ASPECT_RATIO(1.2051),
-};
-
 #define TICKS_30MHZ(x) (x ? 30000000.0/x : 10000)
 static const uint32_t PLM_VIDEO_PICTURE_RATE[] = {
 	TICKS_30MHZ(0.000),
@@ -1644,6 +1617,24 @@ static const plm_vlc_t PLM_VIDEO_MACROBLOCK_ADDRESS_INCREMENT[] = {
 	{       0,   25}, {       0,   24},  //  38: 0000 0100 00x
 	{       0,   23}, {       0,   22},  //  39: 0000 0100 01x
 };
+
+static inline int plm_dma_read_macroblock_address_increment(plm_dma_buffer_t *buffer)
+{
+	int result;
+	// Use soft huffman decoding in case we have less than 13 bits
+	if (!plm_dma_buffer_has(buffer, 13))
+	{
+		result = plm_dma_buffer_read_vlc(buffer, PLM_VIDEO_MACROBLOCK_ADDRESS_INCREMENT);
+	}
+	else
+	{
+		fifo_ctrl->hw_huffman_read_dct_coeff=1;
+		__asm volatile("" : : : "memory");
+		result = fifo_ctrl->hw_huffman_read_dct_coeff;
+	}
+	return result;
+}
+
 
 static const plm_vlc_t PLM_VIDEO_MACROBLOCK_TYPE_INTRA[] = {
 	{  1 << 1,    0}, {       0,  0x01},  //   0: x
@@ -1936,6 +1927,25 @@ static const plm_vlc_uint_t PLM_VIDEO_DCT_COEFF[] = {
 	{       0,   0x1c01}, {       0,   0x1b01},  // 111: 0000 0000 0001 111x
 };
 
+static inline uint16_t plm_dma_read_dct_coeff(plm_dma_buffer_t *buffer)
+{
+	uint16_t result;
+	
+	// Use soft huffman decoding in case we have less than 16 bits
+	if (!plm_dma_buffer_has(buffer, 16))
+	{
+		result = plm_dma_buffer_read_vlc_uint(buffer, PLM_VIDEO_DCT_COEFF);
+	}
+	else
+	{
+		fifo_ctrl->hw_huffman_read_dct_coeff=0;
+		__asm volatile("" : : : "memory");
+		return fifo_ctrl->hw_huffman_read_dct_coeff;
+	}
+
+	return result;
+}
+
 typedef struct {
 	int full_px;
 	int is_set;
@@ -1943,6 +1953,8 @@ typedef struct {
 	int h;
 	int v;
 } plm_video_motion_t;
+
+#define DDR_FRAMEBUFFER_CNT 20
 
 struct plm_video_t {
 	int time;
@@ -1974,7 +1986,7 @@ struct plm_video_t {
 	plm_frame_t frame_forward;
 	plm_frame_t frame_backward;
 
-	plm_frame_t framebuffers[20];
+	plm_frame_t framebuffers[DDR_FRAMEBUFFER_CNT];
 
 	uint8_t *frames_data;
 
@@ -2067,12 +2079,6 @@ plm_video_t * plm_video_create_with_buffer(plm_dma_buffer_t *buffer, int destroy
 int32_t plm_video_get_frameperiod(plm_video_t *self) {
 	return plm_video_has_header(self)
 		? seq_hdr_conf.frameperiod
-		: 0;
-}
-
-int32_t plm_video_get_pixel_aspect_ratio(plm_video_t *self) {
-	return plm_video_has_header(self)
-		? seq_hdr_conf.pixel_aspect_ratio
 		: 0;
 }
 
@@ -2208,21 +2214,9 @@ int plm_video_decode_sequence_header(plm_video_t *self) {
 	if (seq_hdr_conf.width <= 0 || seq_hdr_conf.height <= 0) {
 		return FALSE;
 	}
-
+	
 	// Get pixel aspect ratio
-	int pixel_aspect_ratio_code;
-	pixel_aspect_ratio_code = plm_dma_buffer_read(self->buffer, 4);
-	pixel_aspect_ratio_code -= 1;
-	if (pixel_aspect_ratio_code < 0) {
-		pixel_aspect_ratio_code = 0;
-	}
-	int par_last = (sizeof(PLM_VIDEO_PIXEL_ASPECT_RATIO) /
-			sizeof(PLM_VIDEO_PIXEL_ASPECT_RATIO[0]) - 1);
-	if (pixel_aspect_ratio_code > par_last) {
-		pixel_aspect_ratio_code = par_last;
-	}
-	seq_hdr_conf.pixel_aspect_ratio =
-		PLM_VIDEO_PIXEL_ASPECT_RATIO[pixel_aspect_ratio_code];
+    seq_hdr_conf.pixel_aspect_ratio =  plm_dma_buffer_read(self->buffer, 4);
 
 	// Get frame rate
 	seq_hdr_conf.frameperiod = PLM_VIDEO_PICTURE_RATE[plm_dma_buffer_read(self->buffer, 4)];
@@ -2262,7 +2256,8 @@ int plm_video_decode_sequence_header(plm_video_t *self) {
 	seq_hdr_conf.chroma_width = seq_hdr_conf.mb_width << 3;
 	seq_hdr_conf.chroma_height = seq_hdr_conf.mb_height << 3;
 
-	seq_hdr_conf.fbindex = 0;
+	if (seq_hdr_conf.fbindex >= DDR_FRAMEBUFFER_CNT)
+		seq_hdr_conf.fbindex = 0;
 
 	fifo_ctrl->has_sequence_header = TRUE;
 	__asm volatile("": : :"memory");
@@ -2354,7 +2349,7 @@ void plm_video_decode_picture(plm_video_t *self) {
 	self->frame_current.temporal_ref = self->temporal_ref;
 
 	seq_hdr_conf.fbindex++;
-	if (seq_hdr_conf.fbindex == 20)
+	if (seq_hdr_conf.fbindex >= DDR_FRAMEBUFFER_CNT)
 		seq_hdr_conf.fbindex = 0;
 
 	while (PLM_START_IS_SLICE(self->start_code)) {
@@ -2410,16 +2405,16 @@ void plm_video_decode_macroblock(plm_video_t *self) {
 
 	// Decode increment
 	int increment = 0;
-	int t = plm_dma_buffer_read_vlc(self->buffer, PLM_VIDEO_MACROBLOCK_ADDRESS_INCREMENT);
+	int t = plm_dma_read_macroblock_address_increment(self->buffer);
 
 	while (t == 34) {
 		// macroblock_stuffing
-		t = plm_dma_buffer_read_vlc(self->buffer, PLM_VIDEO_MACROBLOCK_ADDRESS_INCREMENT);
+		t = plm_dma_read_macroblock_address_increment(self->buffer);
 	}
 	while (t == 35) {
 		// macroblock_escape
 		increment += 33;
-		t = plm_dma_buffer_read_vlc(self->buffer, PLM_VIDEO_MACROBLOCK_ADDRESS_INCREMENT);
+		t = plm_dma_read_macroblock_address_increment(self->buffer);
 	}
 	increment += t;
 
@@ -2762,16 +2757,7 @@ void plm_video_decode_block(plm_video_t *self, int block) {
 	while (TRUE) {
 		int run = 0;
 		OUT_DEBUG = 20;
-#if 0
-		uint16_t coeff = plm_dma_buffer_read_vlc_uint(self->buffer, PLM_VIDEO_DCT_COEFF);
-#else
-		// We assume a requirement for 16 bits.
-		// This is huffman encoded, so the length will vary. But 16 is the maximum
-		while (!plm_dma_buffer_has(self->buffer, 16));
-		fifo_ctrl->hw_huffman_read_dct_coeff=1;
-		__asm volatile("" : : : "memory");
-		uint16_t coeff = fifo_ctrl->hw_huffman_read_dct_coeff;
-#endif
+		uint16_t coeff = plm_dma_read_dct_coeff(self->buffer);
 		OUT_DEBUG = 32;
 
 		if ((coeff == 0x0001) && (n > 0) && (plm_dma_buffer_read(self->buffer, 1) == 0)) {
