@@ -582,6 +582,52 @@ class CDi {
         call_func = SS_Opt; // Invalidate
     }
 
+    /// Presses buttons until game is reached
+    void space_ace_pal() {
+        switch (frame_index) {
+        case 154:
+            // Skip Philips Intro
+            press_button_signal = true;
+            break;
+        case 414:
+            // Skip SUPERCLUB company logo
+            press_button_signal = true;
+            break;
+        case 460:
+            // Skip game intro
+            press_button_signal = true;
+            break;
+        }
+    }
+
+    /// Presses buttons until game is reached
+    void braindead13_pal() {
+        switch (frame_index) {
+        case 250:
+            // Skip Philips Intro
+            press_button_signal = true;
+            break;
+        case 300:
+            // Skip ICDI company logo
+            press_button_signal = true;
+            break;
+        case 313:
+#ifdef TRACE
+            do_trace = true;
+            fprintf(stderr, "Trace on!\n");
+#endif
+            break;
+        case 365:
+            // status = 1;
+            // fprintf(stderr, "Stop!\n");
+            break;
+        case 460: // TODO index might be wrong
+            // Skip game intro
+            press_button_signal = true;
+            break;
+        }
+    }
+
   public:
     void loadfile(uint16_t index, const char *path) {
 
@@ -869,8 +915,9 @@ class CDi {
                 // NTSC
             } else {
                 // PAL
+                // space_ace_pal();
+                // braindead13_pal();
             }
-
 #endif
 
             if (press_button_signal) {
@@ -905,6 +952,7 @@ class CDi {
                 mpeg_clk_calc_ticks = 0;
 
                 frame_index++;
+                dut.rootp->emu__DOT__cditop__DOT__frame_index = frame_index;
             }
             pixel_index = 0;
             memset(output_image, 0, sizeof(output_image));
@@ -1246,7 +1294,7 @@ int main(int argc, char **argv) {
 
     switch (machineindex) {
     case 0:
-        f_cd_bin = fopen("images/guignols.bin", "rb");
+        f_cd_bin = fopen("images/braindead13.bin", "rb");
         break;
     case 1:
         f_cd_bin = fopen("images/braindead13.bin", "rb");
@@ -1262,7 +1310,7 @@ int main(int argc, char **argv) {
         f_cd_bin = fopen("images/christ_country.bin", "rb");
         break;
     case 5:
-        f_cd_bin = fopen("images/fmvtest.bin", "rb");
+        f_cd_bin = fopen("images/startrek.bin", "rb");
         break;
     case 6:
         f_cd_bin = fopen("images/FMVTEST.BIN", "rb");
@@ -1272,11 +1320,9 @@ int main(int argc, char **argv) {
         break;
     case 8:
         f_cd_bin = fopen("images/Dragon_s_Lair_US.bin", "rb");
-        prepare_apprentice_usa_toc();
         break;
     case 9:
         f_cd_bin = fopen("images/space_ace_eu.bin", "rb");
-        prepare_apprentice_usa_toc();
         break;
     }
 

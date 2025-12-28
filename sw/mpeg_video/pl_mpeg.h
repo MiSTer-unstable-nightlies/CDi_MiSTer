@@ -154,7 +154,7 @@ extern "C" {
 // Public Data Types
 
 extern struct seq_hdr_conf {
-	int frameperiod;
+	int frameperiod; // raw value from header
 	int pixel_aspect_ratio;
 
 	int width;
@@ -354,12 +354,6 @@ int plm_get_num_video_streams(plm_t *self);
 
 int plm_get_width(plm_t *self);
 int plm_get_height(plm_t *self);
-
-
-// Get the frameperiod of the video stream in frames per second.
-
-int32_t plm_get_frameperiod(plm_t *self);
-
 
 // Get or set whether audio decoding is enabled. Default TRUE.
 
@@ -707,12 +701,6 @@ void plm_video_destroy(plm_video_t *self);
 
 int plm_video_has_header(plm_video_t *self);
 
-
-// Get the frameperiod in frames per second.
-
-int32_t plm_video_get_frameperiod(plm_video_t *self);
-
-
 // Get the display width/height.
 
 int plm_video_get_width(plm_video_t *self);
@@ -915,12 +903,6 @@ int plm_get_width(plm_t *self) {
 int plm_get_height(plm_t *self) {
 	return (plm_init_decoders(self) && self->video_decoder)
 		? plm_video_get_height(self->video_decoder)
-		: 0;
-}
-
-int32_t plm_get_frameperiod(plm_t *self) {
-	return (plm_init_decoders(self) && self->video_decoder)
-		? plm_video_get_frameperiod(self->video_decoder)
 		: 0;
 }
 
@@ -1288,29 +1270,40 @@ size_t plm_buffer_tell_file_callback(plm_buffer_t *self, void *user) {
 
 #endif // PLM_NO_STDIO
 
-int plm_dma_buffer_has_ended(plm_dma_buffer_t *self) {
-	return self->has_ended;
-}
 
 int plm_buffer_has_ended(plm_buffer_t *self) {
 	return self->has_ended;
 }
 
-static inline void plm_dma_buffer_wait_for_data(plm_dma_buffer_t *self, size_t count)
-{
+static inline int plm_dma_buffer_has(plm_dma_buffer_t *self, size_t count) {
 	__asm volatile("" : : : "memory");
-	uint32_t timeout = 800000;
 	while (((fifo_ctrl->write_byte_index << 3) - fifo_ctrl->read_bit_index) < count)
 	{
-		if (timeout-- == 0)
-			frame_display_fifo->event_buffer_underflow = 1;
 		__asm volatile("" : : : "memory");
+		// If the driver has not yet instructed to play, we will wait patiently
+		// But if the driver has told us to play, we accept an abort of the stream
+		// as long as no pictures are left in the output FIFO
+		if (frame_display_fifo->playback_active && frame_display_fifo->pictures_in_fifo == 0)
+		{
+			return FALSE;
+		}
 	}
+	return TRUE;
 }
 
-static inline int plm_dma_buffer_has(plm_dma_buffer_t *self, size_t count) {
-	plm_dma_buffer_wait_for_data(self,count);
-	return TRUE;
+static inline int plm_dma_buffer_has_noblock(plm_dma_buffer_t *self, size_t count)
+{
+	__asm volatile("" : : : "memory");
+	if (((fifo_ctrl->write_byte_index << 3) - fifo_ctrl->read_bit_index) >= count)
+	{
+		return TRUE;
+	}
+	return FALSE;
+}
+
+int plm_dma_buffer_has_ended(plm_dma_buffer_t *self)
+{
+	return !plm_dma_buffer_has_noblock(self, 32);
 }
 
 int plm_buffer_has(plm_buffer_t *self, size_t count) {
@@ -1333,7 +1326,10 @@ int plm_buffer_has(plm_buffer_t *self, size_t count) {
 }
 
 int plm_dma_buffer_read(plm_dma_buffer_t *self, int count) {
-    plm_dma_buffer_wait_for_data(self, count);
+	if (!plm_dma_buffer_has(self, count)) {
+		return 0;
+	}
+
 #if 0
 	__asm volatile("" : : : "memory");
 
@@ -1390,8 +1386,9 @@ void plm_buffer_align(plm_buffer_t *self) {
 }
 
 void plm_dma_buffer_skip(plm_dma_buffer_t *self, size_t count) {
-	plm_dma_buffer_wait_for_data(self,count);
-	fifo_ctrl->read_bit_index += count;
+	if (plm_dma_buffer_has(self, count)) {
+		fifo_ctrl->read_bit_index += count;
+	}
 }
 
 static const int PLM_START_SEQ_END = 0xB7;
@@ -1512,7 +1509,7 @@ static const int PLM_START_USER_DATA = 0xB2;
 	(c >= PLM_START_SLICE_FIRST && c <= PLM_START_SLICE_LAST)
 
 #define TICKS_30MHZ(x) (x ? 30000000.0/x : 10000)
-static const uint32_t PLM_VIDEO_PICTURE_RATE[] = {
+static const uint32_t PLM_VIDEO_PICTURE_RATE_30MHZ[] = {
 	TICKS_30MHZ(0.000),
 	TICKS_30MHZ(23.976),
 	TICKS_30MHZ(24.000),
@@ -1530,6 +1527,27 @@ static const uint32_t PLM_VIDEO_PICTURE_RATE[] = {
 	TICKS_30MHZ(0.000),
 	TICKS_30MHZ(0.0),
 };
+
+#define TICKS_90KHZ(x) (x ? 90000.0/x : 100)
+static const uint32_t PLM_VIDEO_PICTURE_RATE_90KHZ[] = {
+	TICKS_90KHZ(0.000),
+	TICKS_90KHZ(23.976),
+	TICKS_90KHZ(24.000),
+	TICKS_90KHZ(25.000),
+	TICKS_90KHZ(29.970),
+	TICKS_90KHZ(30.000),
+	TICKS_90KHZ(50.000),
+	TICKS_90KHZ(59.94),
+	TICKS_90KHZ(60.000),
+	TICKS_90KHZ(0.000),
+	TICKS_90KHZ(0.000),
+	TICKS_90KHZ(0.000),
+	TICKS_90KHZ(0.000),
+	TICKS_90KHZ(0.000),
+	TICKS_90KHZ(0.000),
+	TICKS_90KHZ(0.0),
+};
+
 
 static const uint8_t PLM_VIDEO_ZIG_ZAG[] = {
 	 0,  1,  8, 16,  9,  2,  3, 10,
@@ -1622,7 +1640,7 @@ static inline int plm_dma_read_macroblock_address_increment(plm_dma_buffer_t *bu
 {
 	int result;
 	// Use soft huffman decoding in case we have less than 13 bits
-	if (!plm_dma_buffer_has(buffer, 13))
+	if (!plm_dma_buffer_has_noblock(buffer, 13))
 	{
 		result = plm_dma_buffer_read_vlc(buffer, PLM_VIDEO_MACROBLOCK_ADDRESS_INCREMENT);
 	}
@@ -1932,7 +1950,8 @@ static inline uint16_t plm_dma_read_dct_coeff(plm_dma_buffer_t *buffer)
 	uint16_t result;
 	
 	// Use soft huffman decoding in case we have less than 16 bits
-	if (!plm_dma_buffer_has(buffer, 16))
+
+	if (!plm_dma_buffer_has_noblock(buffer, 16))
 	{
 		result = plm_dma_buffer_read_vlc_uint(buffer, PLM_VIDEO_DCT_COEFF);
 	}
@@ -2076,12 +2095,6 @@ plm_video_t * plm_video_create_with_buffer(plm_dma_buffer_t *buffer, int destroy
 	return self;
 }
 
-int32_t plm_video_get_frameperiod(plm_video_t *self) {
-	return plm_video_has_header(self)
-		? seq_hdr_conf.frameperiod
-		: 0;
-}
-
 int plm_video_get_width(plm_video_t *self) {
 	return plm_video_has_header(self)
 		? seq_hdr_conf.width
@@ -2219,7 +2232,7 @@ int plm_video_decode_sequence_header(plm_video_t *self) {
     seq_hdr_conf.pixel_aspect_ratio =  plm_dma_buffer_read(self->buffer, 4);
 
 	// Get frame rate
-	seq_hdr_conf.frameperiod = PLM_VIDEO_PICTURE_RATE[plm_dma_buffer_read(self->buffer, 4)];
+	seq_hdr_conf.frameperiod = plm_dma_buffer_read(self->buffer, 4);
 
 	// Skip bit_rate, marker, buffer_size and constrained bit
 	plm_dma_buffer_skip(self->buffer, 18 + 1 + 10 + 1);
@@ -2356,12 +2369,17 @@ void plm_video_decode_picture(plm_video_t *self) {
 		OUT_DEBUG = 7;
 
 		plm_video_decode_slice(self, self->start_code & 0x000000FF);
-		if (self->macroblock_address >= seq_hdr_conf.mb_size - 2) {
+		if (self->macroblock_address >= seq_hdr_conf.mb_size - 1) {
 			break;
 		}
 		self->start_code = plm_dma_buffer_next_start_code(self->buffer);
 	}
 
+	// If we have reached this point, we have at least one frame that will be
+	// returned, even if the decoding process was aborted, trying to get another one
+	frame_display_fifo->event_at_least_one_frame=1;
+	__asm volatile("": : :"memory");
+	
 	// If this is a reference picture rotate the prediction pointers
 	if (
 		self->picture_type == PLM_VIDEO_PICTURE_TYPE_INTRA ||
@@ -2402,6 +2420,8 @@ void plm_video_decode_macroblock(plm_video_t *self) {
 	OUT_DEBUG = 14;
 
     worker_cnt++;
+	if (worker_cnt >= 3)
+		worker_cnt = 0;
 
 	// Decode increment
 	int increment = 0;
@@ -2657,8 +2677,7 @@ void plm_video_process_macroblock(
 		return; // corrupt video
 	}
 
-	struct image_synthesis_descriptor *desc = get_next_synthesis_desc();
-	
+	struct image_synthesis_descriptor *desc = get_next_free_synthesis_desc();
 	desc->cpm.interpolate=interpolate;
 	desc->cpm.block_size=block_size;
 	desc->cpm.odd_h=odd_h;
@@ -2668,10 +2687,7 @@ void plm_video_process_macroblock(
 	desc->cpm.di=di;
 	desc->cpm.d=d;
 	desc->cpm.dw=dw;
-	__asm volatile("": : :"memory");
-	desc->ready=2;
-	*((int*)OUTPORT_HANDLE_SHARED) = 1;
-	__asm volatile("": : :"memory");
+	commit_synthesis_desc(desc, 2);
 }
 
 #if 1
@@ -2709,7 +2725,7 @@ void plm_video_decode_block(plm_video_t *self, int block) {
 	uint8_t *quant_matrix;
 	OUT_DEBUG = 8;
 
-	struct image_synthesis_descriptor *desc = get_next_synthesis_desc();
+	struct image_synthesis_descriptor *desc = get_next_free_synthesis_desc();
 	int* block_data=desc->cwp.block_data;
 	fast_block_zero(block_data);
 
@@ -2848,11 +2864,7 @@ void plm_video_decode_block(plm_video_t *self, int block) {
 	desc->cwp.di=di;
 	desc->cwp.d=d;
 	desc->cwp.dw=dw;
-	__asm volatile("": : :"memory");
-	desc->ready=1;
-	*((int*)OUTPORT_HANDLE_SHARED) = 1;
-	__asm volatile("": : :"memory");
-
+	commit_synthesis_desc(desc, 1);
 	OUT_DEBUG = 12;
 }
 

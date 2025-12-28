@@ -58,11 +58,8 @@ void stop_verilator()
 
 void sync_to_worker()
 {
-	struct image_synthesis_descriptor *desc = get_next_synthesis_desc();
-	__asm volatile("" : : : "memory");
-	desc->ready = 3;
-	*((int *)OUTPORT_HANDLE_SHARED) = 1;
-	__asm volatile("" : : : "memory");
+	struct image_synthesis_descriptor *desc = get_next_free_synthesis_desc();
+	commit_synthesis_desc(desc, 3);
 	while (desc->ready == 3)
 		__asm volatile("" : : : "memory");
 }
@@ -120,21 +117,28 @@ static void push_frame(plm_frame_t *frame)
 
 	frame_display_fifo->width = frame->width;
 
+	int period30mhz = PLM_VIDEO_PICTURE_RATE_30MHZ[seq_hdr_conf.frameperiod];
+	int period90khz = PLM_VIDEO_PICTURE_RATE_90KHZ[seq_hdr_conf.frameperiod];
+
+	frame_display_fifo->frameperiod_90khz = period90khz;
+	frame_display_fifo->frameperiod_rawhdr = seq_hdr_conf.frameperiod;
+	frame_display_fifo->temporal_ref = frame->temporal_ref;
+	
 	if (frame_display_fifo->pictures_in_fifo < 5)
 	{
 		// It seems our FIFO is loosing pictures. Maybe the frame rate is slightly off?
 		// Increase frame period by 0.1Hz when running at 25 FPS
-		frame_display_fifo->frameperiod = seq_hdr_conf.frameperiod + 4780;
+		frame_display_fifo->frameperiod_30mhz = period30mhz + 4780;
 	}
 	else if (frame_display_fifo->pictures_in_fifo > 6)
 	{
 		// It seems our FIFO is slightly overflowing. Maybe the frame rate is slightly off?
 		// Decrease frame period by 0.1Hz when running at 25 FPS
-		frame_display_fifo->frameperiod = seq_hdr_conf.frameperiod - 4780;
+		frame_display_fifo->frameperiod_30mhz = period30mhz - 4780;
 	}
 	else
 	{
-		frame_display_fifo->frameperiod = seq_hdr_conf.frameperiod;
+		frame_display_fifo->frameperiod_30mhz = period30mhz;
 	}
 
 	// The order is crucial since a write to height will commit the frame!
@@ -145,16 +149,24 @@ static void push_frame(plm_frame_t *frame)
 
 void main(void)
 {
+	OUT_DEBUG = 1;
+
 	plm_dma_buffer_t *buffer = plm_buffer_create_with_memory((uint8_t *)0x20000000, 700 * 1024 * 1024);
 	if (!buffer)
 		*((volatile uint8_t *)OUTPORT_END) = 2;
 
+	OUT_DEBUG = 29;
+
 	while (!plm_dma_buffer_has(buffer, 1000))
 		;
+
+	OUT_DEBUG = 30;
 
 	plm_video_t *mpeg = plm_video_create_with_buffer(buffer, 0);
 	if (!mpeg)
 		*((volatile uint8_t *)OUTPORT_END) = 3;
+
+	int underflow_occured = 0;
 
 	for (;;)
 	{
@@ -164,21 +176,25 @@ void main(void)
 		{
 			OUT_DEBUG = 27;
 
+			worker_cnt = 0;
 			sync_to_worker();
-			worker_cnt++;
+			worker_cnt = 1;
+			sync_to_worker();
+			worker_cnt = 2;
 			sync_to_worker();
 
 			OUT_DEBUG = 28;
 
-			// Give some feedback to the user that we are running
-			*((volatile uint32_t *)OUTPORT) = frame->time;
-
 			push_frame(frame);
+			underflow_occured = 0;
 		}
 		else
 		{
-			// End simulation since the MPEG stream has ended
-			//*((volatile uint8_t *)OUTPORT_END) = 0;
+			if (!underflow_occured)
+			{
+				frame_display_fifo->event_buffer_underflow = 1;
+				underflow_occured = 1;
+			}
 		}
 	}
 }

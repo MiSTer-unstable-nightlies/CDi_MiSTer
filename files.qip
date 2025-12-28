@@ -8,6 +8,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/cdic.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cditop.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/clut_rle.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/ddr_mux3.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ddr_mux4.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/delta_yuv_decoder.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/display_file_reader.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/dual_ad7528.sv
@@ -28,9 +29,11 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/mpeg/fmv/decoder_firmware_mem
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mpeg/fmv/dual_port_videoram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mpeg/fmv/dualport_shared_ram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mpeg/fmv/frameplayer.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mpeg/fmv/macroblock_worker.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mpeg/fmv/mpeg_input_stream_fifo_32k.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mpeg/fmv/mpeg_video_start_code_decoder.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mpeg/fmv/mpeg_video.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mpeg/fmv/sample_rate_converter.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mpeg/fmv/worker_firmware_memory.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mpeg/fmv/yuv_frame_adr_fifo.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mpeg/VexiiRiscv.v
