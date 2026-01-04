@@ -1,4 +1,4 @@
-
+`include "mpeg/util.svh"
 
 module vmpeg (
     input clk,
@@ -37,7 +37,9 @@ module vmpeg (
     output signed [15:0] audio_right,
     input sample_tick44,
     input clk45tick,
+    output linear_volume_s dsp_volume,
 
+    input debug_disable_vcd_clock,
     output bit mpeg_ram_enabled,  // Prohibits detection of MPEG RAM by the OS RAM crawler
     output bit debug_audio_fifo_overflow,
     output bit debug_video_fifo_overflow
@@ -91,7 +93,11 @@ module vmpeg (
         .playback_active(),
         .event_decoding_started(fma_event_decoding_started),
         .event_frame_decoded(fma_event_frame_decoded),
-        .event_underflow(fma_event_underflow)
+        .event_underflow(fma_event_underflow),
+        .dspa(fma_dspa),
+        .dspd(din[7:0]),
+        .dspd_strobe(write_strobe && bus_ack && access && address[15:1] == 15'h1812),
+        .dsp_volume
     );
 
     wire fmv_event_picture_starts_display;
@@ -111,7 +117,7 @@ module vmpeg (
     bit fmv_playback_active;
     wire fmv_event_sequence_end;
     wire fmv_event_buffer_underflow;
-    wire [3:0] fmv_pictures_in_fifo;
+    wire [4:0] fmv_pictures_in_fifo;
 
 
     bit [8:0] latched_display_offset_y;
@@ -132,7 +138,7 @@ module vmpeg (
         .data_strobe(fmv_data_valid && fmv_packet_body),
         .fifo_full(fmv_fifo_full),
         .ddrif,
-        .vcd_pixel_clock(vcd_pixel_clock),
+        .vcd_pixel_clock(vcd_pixel_clock && !debug_disable_vcd_clock),
         .hsync,
         .vsync,
         .hblank,
@@ -249,7 +255,8 @@ module vmpeg (
         bit seq;  // SEQ Decoded
     } interrupt_flags_s;
 
-    // VMPEG VCD @ 00E01000
+    // VMPEG VCD @ 00E01xxx
+    // The lower 12 bits are don't care bits on real hardware
     // Write only register. Reading is impossible!
     // 0 for base case pixel clock of 15 MHz
     // 1 for VCD pixel clock of 13.5 MHz
@@ -300,6 +307,10 @@ module vmpeg (
     bit [31:0] fma_dclk;
     bit [31:0] fmv_dclk;
     bit [15:0] fma_dclkl_latch;
+
+    // FMA DSPA @ 00E03022
+    // Address for indirect access into DSP memory?
+    bit [7:0] fma_dspa;
 
     // FMV SYSCMD @ 00E040C0
     (* keep *) (* noprune *) bit [15:0] fmv_system_command_register = 0;
@@ -453,7 +464,7 @@ module vmpeg (
             15'h204E: dout = 0;  // e0409c GEN_SYNC_DIFF? Always reads 0 on real machine
             15'h204F: dout = 16'hfe96;  // e0409e GEN_DEC_DELAY? Always changing but negative?
             15'h2050: dout = {1'b0, fmv_decoding_timestamp[21:7]};  // 00E040A0 Decoding Timestamp
-            15'h2052: dout = {12'b0, fmv_pictures_in_fifo};  // 00E040A4 ?? Pictures in fifo?
+            15'h2052: dout = {11'b0, fmv_pictures_in_fifo};  // 00E040A4 ?? Pictures in fifo?
             15'h2054: dout = fmv_decoder_frameperiod_90khz;  // E040A8 Picture Rate Only read.
             15'h2055: dout = fmv_display_rate;  // e040aa ?? Display Rate ? Only read.
             15'h2056: dout = fmv_frame_rate;  // e040ac ?? GEN_FRAME_RATE Read and written.
@@ -674,12 +685,14 @@ module vmpeg (
                         if (!mpeg_ram_enabled) $display("MPEG RAM Enabled!");
                     end
 
+
+                    if (address[15:1+8] == 7'h08) begin
+                        // VMPEG Pixelclock 
+                        $display("VMPEG VCD %x %x", address[15:1], din);
+                        vcd_pixel_clock <= din[0];
+                    end
+
                     case (address[15:1])
-                        // VMPEG Pixelclock
-                        15'h0800: begin
-                            $display("VMPEG VCD %x %x", address[15:1], din);
-                            vcd_pixel_clock <= din[0];
-                        end
                         // FMA Registers
                         15'h1800: begin
                             $display("FMA CMD %x %x", address[15:1], din);
@@ -735,7 +748,13 @@ module vmpeg (
                             fma_interrupt_enable_register <= din;
                             $display("FMA IER %x %x", address[15:1], din);
                         end
-
+                        15'h1811: begin
+                            fma_dspa <= din[7:0];
+                            $display("FMA DSPA %x %x", address[15:1], din);
+                        end
+                        15'h1812: begin
+                            $display("FMA DSPD %x %x", address[15:1], din);
+                        end
                         // FMV Registers
                         15'h2030: begin
                             fmv_interrupt_enable_register <= din;
