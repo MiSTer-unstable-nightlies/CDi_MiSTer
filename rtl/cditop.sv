@@ -54,8 +54,12 @@ module cditop (
 
     bytestream.source slave_serial_out,
     bytestream.sink slave_serial_in,
-    input rc_eye,
     output slave_rts,
+    input rc_eye,
+
+    bytestream.source scc68070_bypass_serial_out,
+    bytestream.sink scc68070_bypass_serial_in,
+    output scc68070_rts,
 
     // IO for CD data
     output bit [31:0] cd_seek_lba,
@@ -427,6 +431,8 @@ module cditop (
         .addr(addr),
         .uart_tx(scc68_uart_tx),
         .uart_rx(scc68_uart_rx),
+        .bypass_uart_rx(scc68070_bypass_serial_in),
+        .bypass_uart_rts(scc68070_rts),
         .debug_uart_fake_space,
         .req1(cdic_dma_req),
         .req2(vmpeg_dma_req),
@@ -645,6 +651,7 @@ module cditop (
 
     // Tool to observe variables in fdrvs1 driver code
     struct {
+        bit [7:0] V_StepDone; // 0x17a char*
         bit [7:0] V_BufStat;  // 0x17b char*
         bit [7:0] V_UpdFlag;  // 0x12e char*
         bit [15:0] V_Stat;    // 0x134
@@ -660,11 +667,13 @@ module cditop (
         bit [31:0] V_ScrOrg;  // 0xee
         bit [31:0] V_ScrOff;  // 0xf2
         bit [31:0] V_NISFnd;  // 0x170
-        bit [7:0]  V_PicRt; // 0x0x17f
+        bit [7:0]  V_PicRt; // 0x0x17f char*
         bit [31:0] V_PWI; // 0x180
         bit [15:0] V_PRPA; //0x194
+        bit [31:0] V_Speed; // 0x100
+        bit [15:0] V_PlayType; // 0x9a
     } fdrvs1 = '{default: 0};
-    bit [23:0] fdrvs1_static  /*verilator public_flat_rw*/ = 0;
+    bit [23:0] fdrvs1_static  /*verilator public_flat_rw*/ = 24'hdfb180;
     always @(posedge clk30) begin
 
         if (fdrvs1_static != 0 && bus_ack && write_strobe) begin
@@ -689,19 +698,28 @@ module cditop (
                 fdrvs1.V_PRPA = cpu_data;
                 $display("V_PRPA = %d dez", cpu_data);
             end
+            if (addr_byte == fdrvs1_static + 24'h009a) begin
+                fdrvs1.V_PlayType = cpu_data;
+                $display("V_PlayType = %d dez", cpu_data);
+            end
 
             // I assume that fdrvs1_static is always aligned to words
-            if (addr_byte == fdrvs1_static + 24'h017a) begin  // Location is 0x17b -> low byte
+            if (addr_byte == fdrvs1_static + 24'h017a && uds) begin  // Location is 0x17a -> high byte
+                fdrvs1.V_StepDone = cpu_data[15:8];
+                $display("V_StepDone = %d dez", cpu_data[15:8]);
+            end
+
+            if (addr_byte == fdrvs1_static + 24'h017a && lds) begin  // Location is 0x17b -> low byte
                 fdrvs1.V_BufStat = cpu_data[7:0];
                 $display("V_BufStat = %d dez", cpu_data[7:0]);
             end
 
-            if (addr_byte == fdrvs1_static + 24'h012e) begin  // Location is 0x12e -> high byte
+            if (addr_byte == fdrvs1_static + 24'h012e && uds) begin  // Location is 0x12e -> high byte
                 fdrvs1.V_UpdFlag = cpu_data[15:8];
                 $display("V_UpdFlag = %d dez", cpu_data[15:8]);
             end
 
-            if (addr_byte == fdrvs1_static + 24'h017e) begin  // Location is 0x17f -> low byte
+            if (addr_byte == fdrvs1_static + 24'h017e && lds) begin  // Location is 0x17f -> low byte
                 fdrvs1.V_PicRt = cpu_data[7:0];
                 $display("V_PicRt = %d dez", cpu_data[7:0]);
             end
@@ -791,6 +809,15 @@ module cditop (
                 $display("V_PWI = %x", {fdrvs1.V_PWI[31:16], cpu_data});
             end
 
+            if (addr_byte == fdrvs1_static + 24'h100) begin
+                fdrvs1.V_Speed[31:16] = cpu_data;
+                $display("V_Speed = %x", {cpu_data, fdrvs1.V_Speed[15:0]});
+            end
+
+            if (addr_byte == fdrvs1_static + 24'h102) begin
+                fdrvs1.V_Speed[15:0] = cpu_data;
+                $display("V_Speed = %x", {fdrvs1.V_Speed[31:16], cpu_data});
+            end
         end
     end
 `endif

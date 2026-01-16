@@ -1,5 +1,7 @@
 # TODOs and known issues
 
+* Implement the speed setting of the 22ER9017 Touchpad
+* Weird VCDs with multi track layout are not playing? (Might be a bootleg)
 * Improve implementation of VCD pixel clock
     * The current visual quality is subpar and shows scaling artifacts during panning shots
     * Analysis of digital VMPEG DVCs might be required
@@ -7,16 +9,11 @@
 * Add support for MPEG Layer I
     * Affected disc is "AIMS - Learning About Ecology (1995)(AIMS Multimedia)(US)"
 * Add support for an emulated Peacekeeper Revolver Light Gun
-* "Who Shot Johnny Rock?" is not stopping the Philips Logo animation when pressing a button
-    * A gun shot can be heard, so the press is registered.
-    * The intro of the game also can't be skipped
-    * cdiemu doesn't have this problem
 * "Uncover featuring Tatjana (Europe)" regressions?
 * Regression of "Historia del Arte Español" (working in DVC rc2)
     * Blank video?
 * Fix Christmas Crisis bonus ride
     * Might still stutter. Analysis required.
-* Add MPEG audio attenuation (e.g. Lost Eden)
 * "Mutant Rampage - Bodyslam" has a tendency to freeze?
 * "The Last Bounty Hunter", "Drug Wars", "Mad Dog 2", "Who Shot Johnny Rock?" have regressions (works in rc2)?
 * "Chaos Control" has video glitches?
@@ -25,7 +22,8 @@
 * "Solar Crusade" has video glitches?
 * "Brain Dead 13" has video glitches when switching MPEG streams
 * "The Secret of Nimh" (Philips Edition) has the wrong frame rate? Sometimes?
-* Slow motion with VCDs is behaving incorrect
+* Slow motion with VCDs is desyncing audio and video
+    * Too many frames in output FIFO
 * Leaving the cake Puzzle in 7th Guest freezes (everytime?)
 * Sound bugs on the police procedures disk?
 * Find a better solution for reducing CPU speed
@@ -49,9 +47,9 @@
     * The ST flag is the issue here, causing a video mode change
 * Add SNAC support (IR remote + wired controller)
     * RC5 support is added. A test using real hardware is required.
-* Add 2 player support
 * CD+G
 * Check compatibility with CDs that have track index 2 as opposed to the usual 0 and 1
+    * Possible discs? "Philips CDI Format Test Disc 1 (Europe)" and a disc by Zeneca Pharmaceuticals Group, "An Interactive Medical Program"
 * Possibly adding support for other PCBs (like Mono II)
 * Refurbish I2C for the front display and show the content as picture in picture during changes?
     * It might not even be required at all.
