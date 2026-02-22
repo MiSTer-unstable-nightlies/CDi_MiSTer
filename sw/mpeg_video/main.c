@@ -28,8 +28,10 @@ extern caddr_t _sp;	 /* _end is set in the linker command file */
 void print_chr(char ch);
 void print_str(const char *p);
 void stop_verilator();
+void advertise_at_least_one_frame();
 
 // #define SOFT_CONVOLVE
+int seq_hdr_latched;
 
 #define PL_MPEG_IMPLEMENTATION
 #define PLM_NO_STDIO
@@ -109,13 +111,18 @@ static void push_frame(plm_frame_t *frame)
 	{
 		first_intra_frame_of_gop_occured = true;
 		frame_display_fifo->first_intra_frame_of_gop = 1;
+
+		frame_display_fifo->first_intra_frame_of_seq = seq_hdr_latched;
+		seq_hdr_latched = false;
 	}
 	else
 	{
 		frame_display_fifo->first_intra_frame_of_gop = 0;
+		frame_display_fifo->first_intra_frame_of_seq = 0;
 	}
 
 	frame_display_fifo->width = frame->width;
+	frame_display_fifo->height = frame->height;
 
 	int period30mhz = PLM_VIDEO_PICTURE_RATE_30MHZ[seq_hdr_conf.frameperiod] * (frame_display_fifo->slow_motion + 1);
 	int period90khz = PLM_VIDEO_PICTURE_RATE_90KHZ[seq_hdr_conf.frameperiod];
@@ -123,6 +130,7 @@ static void push_frame(plm_frame_t *frame)
 	frame_display_fifo->frameperiod_90khz = period90khz;
 	frame_display_fifo->frameperiod_rawhdr = seq_hdr_conf.frameperiod;
 	frame_display_fifo->temporal_ref = frame->temporal_ref;
+	frame_display_fifo->timecode = frame->timecode;
 
 	if (frame_display_fifo->pictures_in_fifo < 3)
 	{
@@ -135,26 +143,46 @@ static void push_frame(plm_frame_t *frame)
 		frame_display_fifo->frameperiod_30mhz = period30mhz;
 	}
 
-	// The order is crucial since a write to height will commit the frame!
+	// The order is crucial. Everything written above must be in I/O by now
 	__asm volatile("" : : : "memory");
-	frame_display_fifo->height = frame->height;
+	frame_display_fifo->commit_frame = 1;
+	__asm volatile("" : : : "memory");
+}
+
+uint32_t last_demuxer_dts = 0;
+uint32_t demuxer_dts;
+
+void update_dts_register()
+{
+	if (last_demuxer_dts != demuxer_dts)
+	{
+		fifo_ctrl->last_decoded_timestamp = demuxer_dts;
+		last_demuxer_dts = demuxer_dts;
+	}
+}
+
+void advertise_at_least_one_frame()
+{
+	__asm volatile("" : : : "memory");
+	frame_display_fifo->event_at_least_one_frame = 1;
+	update_dts_register();
 	__asm volatile("" : : : "memory");
 }
 
 void main(void)
 {
-	OUT_DEBUG = 1;
+	DEBUG_STATE = 1;
 
 	plm_dma_buffer_t *buffer = plm_buffer_create_with_memory((uint8_t *)0x20000000, 700 * 1024 * 1024);
 	if (!buffer)
 		*((volatile uint8_t *)OUTPORT_END) = 2;
 
-	OUT_DEBUG = 29;
+	DEBUG_STATE = 29;
 
 	while (!plm_dma_buffer_has(buffer, 1000))
 		;
 
-	OUT_DEBUG = 30;
+	DEBUG_STATE = 30;
 
 	plm_video_t *mpeg = plm_video_create_with_buffer(buffer, 0);
 	if (!mpeg)
@@ -164,11 +192,15 @@ void main(void)
 
 	for (;;)
 	{
+		demuxer_dts = fifo_ctrl->demuxer_decoding_timestamp;
+		__asm volatile("" : : : "memory");
 		plm_frame_t *frame = plm_video_decode(mpeg);
+		update_dts_register();
+		__asm volatile("" : : : "memory");
 
 		if (frame)
 		{
-			OUT_DEBUG = 27;
+			DEBUG_STATE = 27;
 
 			worker_cnt = 0;
 			sync_to_worker();
@@ -177,7 +209,7 @@ void main(void)
 			worker_cnt = 2;
 			sync_to_worker();
 
-			OUT_DEBUG = 28;
+			DEBUG_STATE = 28;
 
 			push_frame(frame);
 			underflow_occured = 0;

@@ -21,7 +21,6 @@ module frameplayer (
 
     input planar_yuv_s frame,
     input [8:0] frame_width,  // expected to be clocked at clkvideo
-    input [10:0] frame_stride,  // expected to be clocked at clkddr
     input [8:0] frame_height,  // expected to be clocked at clkvideo
     input [8:0] offset_y,  // expected to be clocked at clkvideo
     input [8:0] offset_x,  // expected to be clocked at clkvideo
@@ -65,6 +64,7 @@ module frameplayer (
 
     bit [28:0] address_y_offset;
     bit [28:0] address_uv_offset;
+    bit [10:0] frame_stride;
 
     enum bit [1:0] {
         IDLE,
@@ -231,14 +231,6 @@ module frameplayer (
     // 0011 like the N64 core to force a base of 0x30000000
     localparam bit [3:0] DDR_CORE_BASE = 4'b0011;
 
-    wire vertical_offset_wait_not_null_clkddr;
-    signal_cross_domain cross_vertical_offset_wait_not_null (
-        .clk_a(clkvideo),
-        .clk_b(clkddr),
-        .signal_in_clk_a(vertical_offset_wait != 0),
-        .signal_out_clk_b(vertical_offset_wait_not_null_clkddr)
-    );
-
     always_ff @(posedge clkddr) begin
         linecnt_clkddr <= linecnt;
 
@@ -252,15 +244,16 @@ module frameplayer (
             ddrif.acquire <= 0;
         end
 
-        address_y_offset  <= frame_stride * window_y_clkddr;
-        address_uv_offset <= 29'(frame_stride / 2) * 29'(window_y_clkddr / 2);
+        address_y_offset  <= latched_frame.width * window_y_clkddr;
+        address_uv_offset <= 29'(latched_frame.width / 2) * 29'(window_y_clkddr / 2);
 
-        if (reset_clkddr || vblank_clkddr || vertical_offset_wait_not_null_clkddr) begin
+        if (reset_clkddr || vblank_clkddr) begin
             fetchstate <= IDLE;
             address_y <= latched_frame.y_adr + address_y_offset + 29'(window_x_clkddr);
             address_u <= latched_frame.u_adr + address_uv_offset + 29'(window_x_clkddr / 2);
             address_v <= latched_frame.v_adr + address_uv_offset + 29'(window_x_clkddr / 2);
             fetch_and_show_frame <= latched_frame_valid && show_on_next_video_frame;
+            frame_stride <= latched_frame.width;
             target_y <= 0;
             target_u <= 0;
             target_v <= 0;

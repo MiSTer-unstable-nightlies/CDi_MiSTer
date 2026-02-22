@@ -172,7 +172,7 @@ extern struct seq_hdr_conf {
 	uint8_t intra_quant_matrix[64];
 	uint8_t non_intra_quant_matrix[64];
 
-	int fbindex;
+	uint8_t* next_framebuffer;
 
 } seq_hdr_conf;
 
@@ -185,6 +185,8 @@ typedef struct plm_demux_t plm_demux_t;
 typedef struct plm_video_t plm_video_t;
 typedef struct plm_audio_t plm_audio_t;
 
+void advertise_at_least_one_frame();
+int seq_hdr_latched;
 
 // Demuxed MPEG PS packet
 // The type maps directly to the various MPEG-PES start codes. PTS is the
@@ -229,6 +231,7 @@ typedef struct {
 	plm_plane_t cb;
 	int picture_type;
 	int temporal_ref;
+	int timecode;
 } plm_frame_t;
 
 
@@ -1504,6 +1507,7 @@ static const int PLM_START_SLICE_LAST = 0xAF;
 static const int PLM_START_PICTURE = 0x00;
 static const int PLM_START_EXTENSION = 0xB5;
 static const int PLM_START_USER_DATA = 0xB2;
+static const int PLM_START_GROUP_OF_PICTURES = 0xB8;
 
 #define PLM_START_IS_SLICE(c) \
 	(c >= PLM_START_SLICE_FIRST && c <= PLM_START_SLICE_LAST)
@@ -1975,7 +1979,8 @@ typedef struct {
 	int v;
 } plm_video_motion_t;
 
-#define DDR_FRAMEBUFFER_CNT 35
+// We use 16 MB of memory to store the framebuffers
+#define DDR_MEMORY_AREA 16777216
 
 struct plm_video_t {
 	int time;
@@ -1984,6 +1989,7 @@ struct plm_video_t {
 	int start_code;
 	int picture_type;
 	int temporal_ref;
+	int timecode; // from GOP
 
 	plm_video_motion_t motion_forward;
 	plm_video_motion_t motion_backward;
@@ -2007,10 +2013,6 @@ struct plm_video_t {
 	plm_frame_t frame_forward;
 	plm_frame_t frame_backward;
 
-	plm_frame_t framebuffers[DDR_FRAMEBUFFER_CNT];
-
-	uint8_t *frames_data;
-
 	int has_reference_frame;
 	int assume_no_b_frames;
 };
@@ -2025,8 +2027,9 @@ static inline uint8_t plm_clamp(int n) {
 	return n;
 }
 
+int plm_video_decode_group_of_pictures(plm_video_t *self);
 int plm_video_decode_sequence_header(plm_video_t *self);
-void plm_video_init_frame(plm_video_t *self, plm_frame_t *frame, uint8_t *base);
+void plm_video_init_frame(plm_video_t *self, plm_frame_t *frame);
 void plm_video_decode_picture(plm_video_t *self);
 void plm_video_decode_slice(plm_video_t *self, int slice);
 void plm_video_decode_macroblock(plm_video_t *self);
@@ -2038,7 +2041,6 @@ void plm_video_interpolate_macroblock(plm_video_t *self, plm_frame_t *s, int mot
 void plm_video_process_macroblock(plm_video_t *self, uint8_t *s, uint8_t *d, int mh, int mb, int bs, int interp);
 void plm_video_decode_block(plm_video_t *self, int block);
 void plm_video_idct(int *block);
-void plm_video_allocate_framebuffers(plm_video_t *self);
 
 plm_video_t * plm_video_create_with_buffer(plm_dma_buffer_t *buffer, int destroy_when_done) {
 
@@ -2091,9 +2093,6 @@ plm_video_t * plm_video_create_with_buffer(plm_dma_buffer_t *buffer, int destroy
 		plm_video_decode_sequence_header(self);
 	}
 
-	if (fifo_ctrl->has_sequence_header)
-		plm_video_allocate_framebuffers(self);
-
 	return self;
 }
 
@@ -2122,58 +2121,67 @@ int plm_video_has_ended(plm_video_t *self) {
 }
 
 plm_frame_t *plm_video_decode(plm_video_t *self) {
-	if (!plm_video_has_header(self)) {
-		return NULL;
-	}
+	static int stay_here=FALSE;
 
 	plm_frame_t *frame = NULL;
 
 	// In case the sequence header was parsed before reset
 	self->start_code = PLM_START_SEQUENCE;
 
-	do {
-		OUT_DEBUG = 2;
-		if (self->start_code != PLM_START_PICTURE) {
-			self->start_code = plm_dma_buffer_find_start_code(self->buffer, PLM_START_PICTURE);
-			
-			if (self->start_code == -1) {
-				// If we reached the end of the file and the previously decoded
-				// frame was a reference frame, we still have to return it.
-				if (
-					self->has_reference_frame &&
-					!self->assume_no_b_frames &&
-					plm_dma_buffer_has_ended(self->buffer) && (
-						self->picture_type == PLM_VIDEO_PICTURE_TYPE_INTRA ||
-						self->picture_type == PLM_VIDEO_PICTURE_TYPE_PREDICTIVE
-					)
-				) {
-					self->has_reference_frame = FALSE;
-					frame = &self->frame_backward;
-					break;
-				}
+    do {
+        DEBUG_STATE = 2;
+		if (!stay_here)
+		    self->start_code = plm_dma_buffer_next_start_code(self->buffer);
+		stay_here=FALSE;
 
-				return NULL;
+		if (self->start_code == PLM_START_PICTURE && fifo_ctrl->has_sequence_header) {
+			plm_video_decode_picture(self);
+
+			if (self->assume_no_b_frames) {
+				frame = &self->frame_backward;
+			}
+			else if (self->picture_type == PLM_VIDEO_PICTURE_TYPE_B) {
+				frame = &self->frame_current;
+			}
+			else if (self->has_reference_frame) {
+				frame = &self->frame_forward;
+			}
+			else {
+				self->has_reference_frame = TRUE;
 			}
 		}
-		OUT_DEBUG = 9;
-		
-		plm_video_decode_picture(self);
+		else if (self->start_code == PLM_START_SEQUENCE){
+			if (self->has_reference_frame)
+			{
+				self->has_reference_frame = FALSE;
+				frame = &self->frame_backward;
+				fifo_ctrl->has_sequence_header = FALSE;
+				stay_here = TRUE;
+				break;
+			}
+			plm_video_decode_sequence_header(self);
+		}
+		else if  (self->start_code == PLM_START_GROUP_OF_PICTURES){
+			plm_video_decode_group_of_pictures(self);
+		}
+		else if (self->start_code == -1) {
+			// If we reached the end of the file and the previously decoded
+			// frame was a reference frame, we still have to return it.
+			if (
+				self->has_reference_frame &&
+				plm_dma_buffer_has_ended(self->buffer) 
+			) {
+				self->has_reference_frame = FALSE;
+				frame = &self->frame_backward;
+				break;
+			}
 
-		if (self->assume_no_b_frames) {
-			frame = &self->frame_backward;
+			return NULL;
 		}
-		else if (self->picture_type == PLM_VIDEO_PICTURE_TYPE_B) {
-			frame = &self->frame_current;
-		}
-		else if (self->has_reference_frame) {
-			frame = &self->frame_forward;
-		}
-		else {
-			self->has_reference_frame = TRUE;
-		}
+
+
 	} while (!frame);
-	
-	OUT_DEBUG = 15;
+	DEBUG_STATE = 15;
 
 	frame->time = self->time;
 	self->frames_decoded++;
@@ -2201,20 +2209,22 @@ int plm_video_has_header(plm_video_t *self) {
 	return TRUE;
 }
 
-void plm_video_allocate_framebuffers(plm_video_t *self)
-{
-	// Allocate one big chunk of data for all 3 frames = 9 planes
-	size_t luma_plane_size = seq_hdr_conf.luma_width * seq_hdr_conf.luma_height;
-	size_t chroma_plane_size = seq_hdr_conf.chroma_width * seq_hdr_conf.chroma_height;
-	size_t frame_data_size = (luma_plane_size + 2 * chroma_plane_size);
-	
-	self->frames_data = (uint8_t*)0;
-	plm_video_init_frame(self, &self->frame_current, self->frames_data + frame_data_size * 0);
-	plm_video_init_frame(self, &self->frame_forward, self->frames_data + frame_data_size * 1);
-	plm_video_init_frame(self, &self->frame_backward, self->frames_data + frame_data_size * 2);
+int plm_video_decode_group_of_pictures(plm_video_t *self) {
+	if (!plm_dma_buffer_has(self->buffer, 11+2+12)) {
+		return FALSE;
+	}
 
-	for (int i=0;i<DDR_FRAMEBUFFER_CNT;i++)
-		plm_video_init_frame(self, &self->framebuffers[i], self->frames_data + frame_data_size * (3+i));
+	// skip drop frame flag
+	plm_dma_buffer_skip(self->buffer, 1);
+
+	uint32_t hours_minutes =  plm_dma_buffer_read(self->buffer, 11);
+
+	// skip marker
+	plm_dma_buffer_skip(self->buffer, 1);
+
+	uint32_t seconds_frame =  plm_dma_buffer_read(self->buffer, 12);
+
+	self->timecode = (hours_minutes<<12) | seconds_frame;
 }
 
 int plm_video_decode_sequence_header(plm_video_t *self) {
@@ -2223,13 +2233,18 @@ int plm_video_decode_sequence_header(plm_video_t *self) {
 		return FALSE;
 	}
 
-	seq_hdr_conf.width = plm_dma_buffer_read(self->buffer, 12);
-	seq_hdr_conf.height = plm_dma_buffer_read(self->buffer, 12);
+	int width =  plm_dma_buffer_read(self->buffer, 12);
+	int height =  plm_dma_buffer_read(self->buffer, 12);
 
-	if (seq_hdr_conf.width <= 0 || seq_hdr_conf.height <= 0) {
+	if (width <= 0 || height <= 0) {
 		return FALSE;
 	}
 	
+	int frame_size_changed = ((width != seq_hdr_conf.width) || (height != seq_hdr_conf.height));
+
+	seq_hdr_conf.width = width;
+	seq_hdr_conf.height = height;
+
 	// Get pixel aspect ratio
     seq_hdr_conf.pixel_aspect_ratio =  plm_dma_buffer_read(self->buffer, 4);
 
@@ -2271,36 +2286,47 @@ int plm_video_decode_sequence_header(plm_video_t *self) {
 	seq_hdr_conf.chroma_width = seq_hdr_conf.mb_width << 3;
 	seq_hdr_conf.chroma_height = seq_hdr_conf.mb_height << 3;
 
-	if (seq_hdr_conf.fbindex >= DDR_FRAMEBUFFER_CNT)
-		seq_hdr_conf.fbindex = 0;
-
 	fifo_ctrl->has_sequence_header = TRUE;
+
+	if (frame_size_changed)
+	{
+		// Allocate one big chunk of data for all 3 frames = 9 planes
+		plm_video_init_frame(self, &self->frame_current);
+		plm_video_init_frame(self, &self->frame_forward);
+		plm_video_init_frame(self, &self->frame_backward);
+	}
 	__asm volatile("": : :"memory");
+	seq_hdr_latched=1;
 
 	return TRUE;
 }
 
-void plm_video_init_frame(plm_video_t *self, plm_frame_t *frame, uint8_t *base) {
+void plm_video_init_frame(plm_video_t *self, plm_frame_t *frame) {
 	size_t luma_plane_size = seq_hdr_conf.luma_width * seq_hdr_conf.luma_height;
 	size_t chroma_plane_size = seq_hdr_conf.chroma_width * seq_hdr_conf.chroma_height;
+	size_t frame_data_size = (luma_plane_size + 2 * chroma_plane_size);
 
 	frame->width = seq_hdr_conf.width;
 	frame->height = seq_hdr_conf.height;
 	frame->y.width = seq_hdr_conf.luma_width;
 	frame->y.height = seq_hdr_conf.luma_height;
-	frame->y.data = base;
+	frame->y.data = seq_hdr_conf.next_framebuffer;
 
 	frame->cr.width = seq_hdr_conf.chroma_width;
 	frame->cr.height = seq_hdr_conf.chroma_height;
-	frame->cr.data = base + luma_plane_size;
+	frame->cr.data = seq_hdr_conf.next_framebuffer + luma_plane_size;
 
 	frame->cb.width = seq_hdr_conf.chroma_width;
 	frame->cb.height = seq_hdr_conf.chroma_height;
-	frame->cb.data = base + luma_plane_size + chroma_plane_size;
+	frame->cb.data = seq_hdr_conf.next_framebuffer + luma_plane_size + chroma_plane_size;
+
+	seq_hdr_conf.next_framebuffer += frame_data_size;
+	if (((uint32_t)(seq_hdr_conf.next_framebuffer + frame_data_size)) >= DDR_MEMORY_AREA)
+		seq_hdr_conf.next_framebuffer=0;
 }
 
 void plm_video_decode_picture(plm_video_t *self) {
-	OUT_DEBUG = 3;
+	DEBUG_STATE = 3;
 
 	self->temporal_ref = plm_dma_buffer_read(self->buffer, 10);
 	self->picture_type = plm_dma_buffer_read(self->buffer, 3);
@@ -2311,7 +2337,7 @@ void plm_video_decode_picture(plm_video_t *self) {
 		return;
 	}
 
-	OUT_DEBUG = 4;
+	DEBUG_STATE = 4;
 
 	// Forward full_px, f_code
 	if (
@@ -2327,7 +2353,7 @@ void plm_video_decode_picture(plm_video_t *self) {
 		self->motion_forward.r_size = f_code - 1;
 	}
 
-	OUT_DEBUG = 5;
+	DEBUG_STATE = 5;
 
 	// Backward full_px, f_code
 	if (self->picture_type == PLM_VIDEO_PICTURE_TYPE_B) {
@@ -2358,17 +2384,13 @@ void plm_video_decode_picture(plm_video_t *self) {
 	);
 
 	// Decode all slices
-	self->frame_current = self->framebuffers[seq_hdr_conf.fbindex];
-
+	plm_video_init_frame(self, &self->frame_current);
 	self->frame_current.picture_type = self->picture_type;
 	self->frame_current.temporal_ref = self->temporal_ref;
-
-	seq_hdr_conf.fbindex++;
-	if (seq_hdr_conf.fbindex >= DDR_FRAMEBUFFER_CNT)
-		seq_hdr_conf.fbindex = 0;
-
+	self->frame_current.timecode = self->timecode;
+	
 	while (PLM_START_IS_SLICE(self->start_code)) {
-		OUT_DEBUG = 7;
+		DEBUG_STATE = 7;
 
 		plm_video_decode_slice(self, self->start_code & 0x000000FF);
 		if (self->macroblock_address >= seq_hdr_conf.mb_size - 1) {
@@ -2377,10 +2399,17 @@ void plm_video_decode_picture(plm_video_t *self) {
 		self->start_code = plm_dma_buffer_next_start_code(self->buffer);
 	}
 
+	// Predict skipped macroblocks after the last slice
+	while (self->macroblock_address < seq_hdr_conf.mb_size - 1 ) {
+		self->macroblock_address++;
+		self->mb_row = self->macroblock_address / seq_hdr_conf.mb_width;
+		self->mb_col = self->macroblock_address % seq_hdr_conf.mb_width;
+		plm_video_predict_macroblock(self);
+	}
+
 	// If we have reached this point, we have at least one frame that will be
 	// returned, even if the decoding process was aborted, trying to get another one
-	frame_display_fifo->event_at_least_one_frame=1;
-	__asm volatile("": : :"memory");
+	advertise_at_least_one_frame();
 	
 	// If this is a reference picture rotate the prediction pointers
 	if (
@@ -2419,7 +2448,7 @@ void plm_video_decode_slice(plm_video_t *self, int slice) {
 }
 
 void plm_video_decode_macroblock(plm_video_t *self) {
-	OUT_DEBUG = 14;
+	DEBUG_STATE = 14;
 
     worker_cnt++;
 	if (worker_cnt >= 3)
@@ -2440,7 +2469,7 @@ void plm_video_decode_macroblock(plm_video_t *self) {
 	}
 	increment += t;
 
-	OUT_DEBUG = 16;
+	DEBUG_STATE = 16;
 
 	// Process any skipped macroblocks
 	if (self->slice_begin) {
@@ -2594,20 +2623,20 @@ void plm_video_predict_macroblock(plm_video_t *self) {
 		}
 
 		if (self->motion_forward.is_set) {
-			OUT_DEBUG = 23;
+			DEBUG_STATE = 23;
 			plm_video_copy_macroblock(self, &self->frame_forward, fw_h, fw_v);
 			if (self->motion_backward.is_set) {
-				OUT_DEBUG = 24;
+				DEBUG_STATE = 24;
 				plm_video_interpolate_macroblock(self, &self->frame_backward, bw_h, bw_v);
 			}
 		}
 		else {
-			OUT_DEBUG = 25;
+			DEBUG_STATE = 25;
 			plm_video_copy_macroblock(self, &self->frame_backward, bw_h, bw_v);
 		}
 	}
 	else {
-		OUT_DEBUG = 26;
+		DEBUG_STATE = 26;
 		plm_video_copy_macroblock(self, &self->frame_forward, fw_h, fw_v);
 	}
 }
@@ -2725,13 +2754,13 @@ static void write_pixels(int macroblock_intra, int n, int *s,
 void plm_video_decode_block(plm_video_t *self, int block) {
 	int n = 0;
 	uint8_t *quant_matrix;
-	OUT_DEBUG = 8;
+	DEBUG_STATE = 8;
 
 	struct image_synthesis_descriptor *desc = get_next_free_synthesis_desc();
 	int* block_data=desc->cwp.block_data;
 	fast_block_zero(block_data);
 
-	OUT_DEBUG = 17;
+	DEBUG_STATE = 17;
 
 	// Decode DC coefficient of intra-coded blocks
 	if (self->macroblock_intra) {
@@ -2774,9 +2803,9 @@ void plm_video_decode_block(plm_video_t *self, int block) {
 	int level = 0;
 	while (TRUE) {
 		int run = 0;
-		OUT_DEBUG = 20;
+		DEBUG_STATE = 20;
 		uint16_t coeff = plm_dma_read_dct_coeff(self->buffer);
-		OUT_DEBUG = 32;
+		DEBUG_STATE = 32;
 
 		if ((coeff == 0x0001) && (n > 0) && (plm_dma_buffer_read(self->buffer, 1) == 0)) {
 			// end_of_block
@@ -2809,7 +2838,7 @@ void plm_video_decode_block(plm_video_t *self, int block) {
 			return; // invalid
 		}
 
-		OUT_DEBUG = 31;
+		DEBUG_STATE = 31;
 		int de_zig_zagged = PLM_VIDEO_ZIG_ZAG[n];
 		n++;
 
@@ -2832,7 +2861,7 @@ void plm_video_decode_block(plm_video_t *self, int block) {
 		// Save premultiplied coefficient
 		block_data[de_zig_zagged] = level * PLM_VIDEO_PREMULTIPLIER_MATRIX[de_zig_zagged];
 	}
-	OUT_DEBUG = 6;
+	DEBUG_STATE = 6;
 
 	// Move block to its place
 	uint8_t *d;
@@ -2867,7 +2896,7 @@ void plm_video_decode_block(plm_video_t *self, int block) {
 	desc->cwp.d=d;
 	desc->cwp.dw=dw;
 	commit_synthesis_desc(desc, 1);
-	OUT_DEBUG = 12;
+	DEBUG_STATE = 12;
 }
 
 void plm_video_idct(int *block) {
@@ -2875,7 +2904,7 @@ void plm_video_idct(int *block) {
 		b1, b3, b4, b6, b7, tmp1, tmp2, m0,
 		x0, x1, x2, x3, x4, y3, y4, y5, y6, y7;
 
-	OUT_DEBUG = 10;
+	DEBUG_STATE = 10;
 
 	// Transform columns
 	for (int i = 0; i < 8; ++i) {
@@ -2937,7 +2966,7 @@ void plm_video_idct(int *block) {
 		block[7 + i] = (y4 - b7 + 128) >> 8;
 	}
 
-	OUT_DEBUG = 11;
+	DEBUG_STATE = 11;
 
 }
 

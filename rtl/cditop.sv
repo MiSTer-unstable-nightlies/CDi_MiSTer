@@ -89,7 +89,7 @@ module cditop (
 
     parallelel_spi slave_servo_spi ();
 
-    wire write_strobe  /*verilator public_flat_rd*/;
+    (* keep *) (* noprune *) wire write_strobe  /*verilator public_flat_rd*/;
     wire as  /*verilator public_flat_rd*/;
     wire lds  /*verilator public_flat_rd*/;
     wire uds  /*verilator public_flat_rd*/;
@@ -99,9 +99,20 @@ module cditop (
     bit [15:0] data_in;
     wire [15:0] cpu_data_out;
     wire [23:1] addr;
-    wire [23:0] addr_byte  /*verilator public_flat_rd*/ = {addr[23:1], 1'b0};
+    (* keep *) (* noprune *) wire [23:0] addr_byte  /*verilator public_flat_rd*/ = {
+        addr[23:1], 1'b0
+    };
+    (* keep *) (* noprune *) wire [15:0] cpu_data  /*verilator public_flat_rd*/ = write_strobe ? cpu_data_out : data_in;
 
-    wire [15:0] cpu_data  /*verilator public_flat_rd*/ = write_strobe ? cpu_data_out : data_in;
+    (* keep *) (* noprune *) bit write_strobe_q;
+    (* keep *) (* noprune *) bit [15:0] cpu_data_q;
+    (* keep *) (* noprune *) bit [23:0] addr_byte_q;
+
+    always_ff @(posedge clk30) begin
+        write_strobe_q <= write_strobe;
+        cpu_data_q <= cpu_data;
+        addr_byte_q <= addr_byte;
+    end
 
     wire mcd212_bus_ack;
     bit cdic_bus_ack;
@@ -385,7 +396,8 @@ module cditop (
         .ddrif
     );
 
-    assign vidout = mcd212_vsd ? fmv_video_out : mcd212_video_out;
+    wire force_dvc_video = debug_force_video_plane == 2'b11;
+    assign vidout = (mcd212_vsd || force_dvc_video) ? fmv_video_out : mcd212_video_out;
 
 `ifndef DISABLE_MAIN_CPU
     wire reset68k;
@@ -674,6 +686,10 @@ module cditop (
         bit [15:0] V_PRPA; //0x194
         bit [31:0] V_Speed; // 0x100
         bit [15:0] V_PlayType; // 0x9a
+        bit [7:0] V_Sync;  // 0xc9 char*
+        bit [7:0] V_SyncDone;  // 0x12c char*
+        bit [15:0] V_LCntr;  // 0xac
+        bit [7:0] V_Frozen;  // 0xde char*
     } fdrvs1 = '{default: 0};
     bit [23:0] fdrvs1_static  /*verilator public_flat_rw*/ = 24'hdfb180;
     always @(posedge clk30) begin
@@ -724,6 +740,26 @@ module cditop (
             if (addr_byte == fdrvs1_static + 24'h017e && lds) begin  // Location is 0x17f -> low byte
                 fdrvs1.V_PicRt = cpu_data[7:0];
                 $display("V_PicRt = %d dez", cpu_data[7:0]);
+            end
+
+            if (addr_byte == fdrvs1_static + 24'h00c8 && lds) begin  // Location is 0xc9 -> low byte
+                fdrvs1.V_Sync = cpu_data[7:0];
+                $display("V_Sync = %d dez", cpu_data[7:0]);
+            end
+
+            if (addr_byte == fdrvs1_static + 24'h012c && uds) begin  // Location is 0x12c -> high byte
+                fdrvs1.V_SyncDone = cpu_data[7:0];
+                $display("V_SyncDone = %d dez", cpu_data[7:0]);
+            end
+
+            if (addr_byte == fdrvs1_static + 24'h0de && uds) begin  // Location is 0xde -> high byte
+                fdrvs1.V_Frozen = cpu_data[7:0];
+                $display("V_Frozen = %d dez", cpu_data[7:0]);
+            end
+
+            if (addr_byte == fdrvs1_static + 24'h00ac) begin
+                fdrvs1.V_LCntr = cpu_data;
+                $display("V_LCntr = %x", cpu_data);
             end
 
             if (addr_byte == fdrvs1_static + 24'h016a) begin

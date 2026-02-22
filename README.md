@@ -103,6 +103,12 @@ Note*: 2 controllers are an unusual state for a CD-i machine. Keep that in mind.
 
 [This core is not yet feature complete](doc/todo.md)
 
+### Usage for CD-i homebrew development?
+
+By the time of writing, an optical drive emulator is not available for physical CD-i machines.
+It is therefore encouraged to test on CD-i emulators before burning to disc.
+[This core can be used to test your creations to some extent](doc/cdi_homebrew.md)
+
 ### Issues with external dependencies
 
 * A dump of the SLAVE 3.2 ROM is required to fix some hacks
@@ -177,11 +183,16 @@ by emulation errors but are also present on the real machine.
   * Yes, those exist on real hardware as well and are maybe hidden by overscan
   * A side note, "Dr. Dearth" was probably filmed in front of a blue screen, but the cut out is not very good.
     Blue pixels at the edges are visible on real hardware as well.
-* "The Lost Ride" sometimes has an unexpected mirrored column of pixels on the right side of the screen
-  * This happens on real hardware as well. This seems to be an oversight by the developer.
+* "The Lost Ride"
+  * It sometimes has an unexpected mirrored column of pixels on the right side of the screen
+    * This happens on real hardware as well. This seems to be an oversight by the developer.
+  * The main menu has a weird freeze frame when the cutscene before that is skipped
+    * Like on real hardware. I don't know what they were thinking.
 * During the intro of "The Ultimate Noah's Ark", the Mike Wilks artwork has repeated pixels on the bottom and right edge.
   * This looks wrong but real hardware does that too.
   * There is also a weirdly wrong column of pixels during the title page on the left inside the black frame
+* "Marlboro – Follow Your Dreams" is not booting and hangs on a cyan screen
+  * You are probably using NTSC mode. Being made by a German publisher, this title was probably only tested on European models. It behaves like this on real hardware as well
 
 ## Simulation
 

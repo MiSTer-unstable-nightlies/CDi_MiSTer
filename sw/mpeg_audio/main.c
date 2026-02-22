@@ -26,12 +26,12 @@ struct io_fifo_control
 	uint32_t signal_decoding_started;
 	uint32_t signal_frame_decoded;
 	uint32_t signal_underflow;
+	uint32_t mpeg_audio_header;
 };
 
 struct io_audio_out
 {
 	uint32_t sample;
-	uint32_t fifo_full;
 };
 
 volatile struct io_synth_window_mac *const synth_window_mac = (volatile struct io_synth_window_mac *)0x10001000;
@@ -39,12 +39,12 @@ volatile struct io_fifo_control *const fifo_ctrl = (volatile struct io_fifo_cont
 volatile struct io_audio_out *const io_audio_out_left = (volatile struct io_audio_out *)0x10003000;
 volatile struct io_audio_out *const io_audio_out_right = (volatile struct io_audio_out *)0x10004000;
 
-#define OUTPORT 0x10000000
 #define OUTPORT_L 0x10000004
 #define OUTPORT_R 0x10000008
 #define OUTPORT_END 0x1000000c
 
-#define OUT_DEBUG *(volatile uint32_t *)0x10000030
+#define DEBUG_STATE *(volatile uint32_t *)0x10000030
+#define DEBUG_OUT *(volatile uint32_t *)0x10000000
 
 void print_chr(char ch);
 void print_str(const char *p);
@@ -56,34 +56,9 @@ void stop_verilator();
 #define PLM_NO_STDIO
 #include "pl_mpeg.h"
 
-void print_chr(char ch)
-{
-	*((volatile uint8_t *)OUTPORT) = ch;
-}
-
-void print_str(const char *p)
-{
-	while (*p != 0)
-		*((volatile uint8_t *)OUTPORT) = *(p++);
-}
-
 void stop_verilator()
 {
 	*((volatile uint8_t *)OUTPORT_END) = 0;
-}
-
-void test_vector_unit()
-{
-	synth_window_mac->result = 0;
-	synth_window_mac->addr = 0;
-	synth_window_mac->index = 1;
-	// while (synth_window_mac->busy);
-
-	synth_window_mac->result = 0;
-	synth_window_mac->addr = 0;
-	synth_window_mac->index = 1;
-	// while (synth_window_mac->busy);
-	*((volatile intsample_t *)OUTPORT) = synth_window_mac->result;
 }
 
 volatile union
@@ -93,31 +68,15 @@ volatile union
 	volatile uint16_t int16[2];
 } testenv;
 
-void test_memory()
-{
-	testenv.int32 = 0x12345678;
-	*((volatile uint32_t *)OUTPORT) = testenv.int32;
-	testenv.int8[0] = 0x42;
-	*((volatile uint32_t *)OUTPORT) = testenv.int32;
-	*((volatile uint32_t *)OUTPORT) = testenv.int8[0];
-	testenv.int8[0] = 0x81;
-	testenv.int8[1] = 0x92;
-	testenv.int16[1] = 0x5aa5;
-	*((volatile uint32_t *)OUTPORT) = testenv.int32;
-	*((volatile uint32_t *)OUTPORT) = testenv.int8[0];
-	*((volatile uint32_t *)OUTPORT) = testenv.int8[1];
-	stop_verilator();
-}
-
-void test_mpegmemory()
-{
-	// expect
-	// Debug out ba010000
-	// Debug out 00010021
-	*((volatile uint32_t *)OUTPORT) = *(uint32_t *)0x20000000;
-	*((volatile uint32_t *)OUTPORT) = *(uint32_t *)0x20000004;
-	stop_verilator();
-}
+// 10000 results into at least having 2 TIM interrupts after
+// the last frame has been decoded, before UNF occurs.
+// This seems to be stable with pausing and continuing a playback of
+// "Imagination in Motion - A New Era in 3D Chill Out Video"
+// but also seems to be stable with "The Lost Ride".
+// 100000 was too long for Lost Ride, resulting into audio glitches.
+// It was reduced to 100, which caused problems with "Imagination in Motion"
+// Keep in mind, this heavily relies on compiler optimization and core speed.
+const int kTimeOut = 10000;
 
 void main(void)
 {
@@ -128,7 +87,7 @@ void main(void)
 
 	fifo_ctrl->signal_decoding_started = 1;
 
-	int timeout = 100;
+	int timeout = kTimeOut;
 
 	while (timeout)
 	{
@@ -139,7 +98,7 @@ void main(void)
 			// Give some feedback to the user that we are running
 			cnt++;
 			fifo_ctrl->signal_frame_decoded = cnt;
-			timeout = 100;
+			timeout = kTimeOut;
 		}
 		else
 		{
@@ -156,8 +115,4 @@ void main(void)
 	// Wait forever
 	for (;;)
 		;
-}
-
-uint32_t *irq(uint32_t *regs, uint32_t irqs)
-{
 }

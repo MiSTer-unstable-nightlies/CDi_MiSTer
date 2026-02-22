@@ -65,20 +65,22 @@ module vmpeg (
 
     wire mpeg_xferwrite = (address[15:1] == 15'h206F) && bus_ack && write_strobe && access;
     wire mpeg_word_valid = dma_data_valid || mpeg_xferwrite;
-    bit  dma_for_fma;
+    bit dma_for_fma;
     wire fmv_data_valid  /*verilator public_flat_rd*/ = mpeg_data_valid && !dma_for_fma;
     wire fma_data_valid  /*verilator public_flat_rd*/ = mpeg_data_valid && dma_for_fma;
 
     wire fma_event_decoding_started;
     wire fma_event_frame_decoded;
     wire fma_event_underflow;
-    bit  dsp_reset_input_fifo;
-    bit  fma_dsp_enable = 0;
-    bit  fmv_dsp_enable = 0;
-    bit  fmv_reset_persistent_storage = 0;
+    bit dsp_reset_input_fifo;
+    bit fma_dsp_enable = 0;
+    bit fmv_dsp_enable = 0;
+    bit fmv_reset_persistent_storage = 0;
 
     wire fma_fifo_full;
     wire fmv_fifo_full;
+
+    wire [31:0] fma_mpeg_audio_header;
 
     mpeg_audio audio (
         .clk(clk),
@@ -98,15 +100,15 @@ module vmpeg (
         .dspa(fma_dspa),
         .dspd(din[7:0]),
         .dspd_strobe(write_strobe && bus_ack && access && address[15:1] == 15'h1812),
-        .dsp_volume
+        .dsp_volume,
+        .mpeg_audio_header(fma_mpeg_audio_header)
     );
 
     wire fmv_event_picture_starts_display;
+    wire fmv_event_potential_picture_starts_display;
     wire fmv_event_last_picture_starts_display;
-    wire fmv_event_first_intra_frame_starts_display;
-    wire fmv_event_sequence_header = fmv_event_first_intra_frame_starts_display;
-    wire fmv_event_group_of_pictures = fmv_event_first_intra_frame_starts_display;
-    wire fmv_event_picture = fmv_event_picture_starts_display;
+    wire fmv_event_first_intra_frame_seq_starts_display;
+    wire fmv_event_first_intra_frame_gop_starts_display;
     // TIMECD @ 00E04058
     // example 0x07800280 -> 10:00:30.0
     // mv_info() would have MD_TimeCd=0x0a001e00
@@ -114,7 +116,7 @@ module vmpeg (
     // [27:22] 6 Bit Seconds. Not BCD
     // [5:0] 6 Bit Minutes. Not BCD
     // [10:6] 5 Bits Hours. Not BCD
-    wire [31:0] fmv_timecode;
+    wire [31:0] fmv_display_timecode;
     bit fmv_playback_active;
     bit fmv_single_step;
     wire fmv_event_sequence_end;
@@ -159,12 +161,21 @@ module vmpeg (
         .event_sequence_end(fmv_event_sequence_end),
         .event_buffer_underflow(fmv_event_buffer_underflow),
         .event_picture_starts_display(fmv_event_picture_starts_display),
+        .event_potential_picture_starts_display(fmv_event_potential_picture_starts_display),
         .event_last_picture_starts_display(fmv_event_last_picture_starts_display),
-        .event_first_intra_frame_starts_display(fmv_event_first_intra_frame_starts_display),
+        .event_first_intra_frame_gop_starts_display(fmv_event_first_intra_frame_gop_starts_display),
+        .event_first_intra_frame_seq_starts_display(fmv_event_first_intra_frame_seq_starts_display),
         .pictures_in_fifo(fmv_pictures_in_fifo),
+        .demuxer_decoding_timestamp(fmv_demuxer_decoding_timestamp_reduced_view),
+        .demuxer_decoding_timestamp_updated(fmv_demuxer_decoding_timestamp_updated),
+        .last_decoded_timestamp(fmv_decoder_last_decoded_timestamp),
+        .last_decoded_timestamp_updated(fmv_decoder_last_decoded_timestamp_updated),
         .decoder_width(fmv_decoder_width),
         .decoder_height(fmv_decoder_height),
-        .decoder_tempref(fmv_decoder_tempref),
+        .display_width(fmv_display_width),
+        .display_height(fmv_display_height),
+        .display_tempref(fmv_display_tempref),
+        .display_timecode(fmv_display_timecode),
         .decoder_frameperiod_90khz(fmv_decoder_frameperiod_90khz),
         .decoder_frameperiod_rawhdr(fmv_decoder_frameperiod_rawhdr)
     );
@@ -179,30 +190,21 @@ module vmpeg (
         end
     end
 
-    mpeg_video_start_code_decoder startcode (
-        .clk,
-        .reset,
-        .mpeg_data(mpeg_data),
-        .data_valid(fmv_data_valid && fmv_packet_body),
-        .event_sequence_header(),
-        .event_group_of_pictures(),
-        .event_picture(),
-        .tmpref(),
-        .timecode(fmv_timecode)
-    );
-
     wire signed [32:0] fma_system_clock_reference_start_time;
     wire fma_system_clock_reference_start_time_valid;
-    wire signed [32:0] fmv_system_clock_reference_start_time;
-    wire fmv_system_clock_reference_start_time_valid;
     wire fmv_event_program_end;
     wire fma_event_program_end;
 
     bit [3:0] fmv_stream_number;
     bit [3:0] fma_stream_number;
 
-    wire signed [32:0] fmv_decoding_timestamp;
-    wire fmv_decoding_timestamp_updated;
+    wire signed [32:0] fmv_demuxer_decoding_timestamp;
+    wire fmv_demuxer_decoding_timestamp_updated;
+
+    wire fmv_decoder_last_decoded_timestamp_updated;
+    // How the CPU reads it from 00E040A0
+    wire signed [14:0] fmv_demuxer_decoding_timestamp_reduced_view = fmv_demuxer_decoding_timestamp[21:7];
+    wire signed [14:0] fmv_decoder_last_decoded_timestamp;
 
     mpeg_demuxer #(
         .unit("FMA")
@@ -230,11 +232,11 @@ module vmpeg (
         .data_valid(fmv_data_valid),
         .mpeg_packet_body(fmv_packet_body),
         .stream_filter(fmv_stream_number),
-        .dclk(fmv_dclk),
-        .system_clock_reference_start_time(fmv_system_clock_reference_start_time),
-        .decoding_timestamp(fmv_decoding_timestamp),
-        .decoding_timestamp_updated(fmv_decoding_timestamp_updated),
-        .system_clock_reference_start_time_valid(fmv_system_clock_reference_start_time_valid),
+        .dclk(),
+        .system_clock_reference_start_time(),
+        .decoding_timestamp(fmv_demuxer_decoding_timestamp),
+        .decoding_timestamp_updated(fmv_demuxer_decoding_timestamp_updated),
+        .system_clock_reference_start_time_valid(),
         .event_program_end(fmv_event_program_end)
     );
 
@@ -310,8 +312,15 @@ module vmpeg (
     // Increments with 45 kHz
     // Must never be written to by CPU. Causes system reset on real 210/05
     bit [31:0] fma_dclk;
+
     bit [31:0] fmv_dclk;
     bit [15:0] fma_dclkl_latch;
+
+    bit [31:0] fmv_dclk_start_video;
+    bit fmv_dclk_start_video_latched;
+
+    bit [31:0] fmv_dclk_pause_video;
+    bit fmv_dclk_pause_video_latched;
 
     // FMA DSPA @ 00E03022
     // Address for indirect access into DSP memory?
@@ -391,7 +400,10 @@ module vmpeg (
 
     wire [10:0] fmv_decoder_width;
     wire [ 8:0] fmv_decoder_height;
-    wire [ 7:0] fmv_decoder_tempref;
+    wire [10:0] fmv_display_width;
+    wire [ 8:0] fmv_display_height;
+
+    wire [ 7:0] fmv_display_tempref;
     wire [15:0] fmv_decoder_frameperiod_90khz;
     wire [ 7:0] fmv_decoder_frameperiod_rawhdr;
 
@@ -451,8 +463,8 @@ module vmpeg (
             15'h1807: dout = 16'h0042;  // 0x0E0300E some counter?
             15'h1808: dout = fma_dclk[31:16];  // 0x0E03010
             15'h1809: dout = fma_dclkl_latch;  // 0x0E03012
-            15'h180A: dout = 16'h00fd;  // 0x0E03014 MPEG Audio Header High
-            15'h180B: dout = 16'h50c0;  // 0x0E03016 MPEG Audio Header Low
+            15'h180A: dout = fma_mpeg_audio_header[31:16];  // 0x0E03014 MPEG Audio Header High
+            15'h180B: dout = fma_mpeg_audio_header[15:0];  // 0x0E03016 MPEG Audio Header Low
             15'h180C: dout = {15'b0, fma_dsp_enable};  // 0x0E03018 RUN?
             15'h180D: dout = fma_interrupt_status_register;  // 0x0E0301A
             15'h180E: dout = fma_interrupt_enable_register;  // 0x0E0301C
@@ -461,14 +473,14 @@ module vmpeg (
             15'h2001: dout = image_width;  // 00E04002 ?? Written then Read
             15'h2002: dout = image_height;  // 00E04004 ?? Written then Read
             15'h2003: dout = image_rt;  // 00E04006 ??
-            15'h2004: dout = fmv_timecode[31:16];  // 00E04008 Temporal time code High. During scan
-            15'h2005: dout = fmv_timecode[15:0];  // 00E0400C Temporal time code Low. During scan
-            15'h2029: dout = {5'b0, fmv_decoder_width};  // e04052 Picture Width ?? Only read
-            15'h202a: dout = {7'b0, fmv_decoder_height};  // e04054 Picture Height ?? Only read
+            15'h2004: dout = fmv_display_timecode[15:0];  // 00E04008 Temporal time code High
+            15'h2005: dout = fmv_display_timecode[31:16];  // 00E0400C Temporal time code Low
+            15'h2029: dout = {5'b0, fmv_display_width};  // e04052 Picture Width ?? Only read
+            15'h202a: dout = {7'b0, fmv_display_height};  // e04054 Picture Height ?? Only read
             15'h202b: dout = {8'b0, fmv_decoder_frameperiod_rawhdr};  // e04056 Pic Rt ??
-            15'h202c: dout = fmv_timecode[31:16];  // 00E04058 Time Code High ??
-            15'h202d: dout = fmv_timecode[15:0];  // 00E0405A Time Code Low ??
-            15'h202e: dout = {6'b0, fmv_decoder_tempref, 2'b0};  // 00E0405C TMP REF?? SYS_VSR?
+            15'h202c: dout = fmv_display_timecode[15:0];  // 00E04058 Time Code High ??
+            15'h202d: dout = fmv_display_timecode[31:16];  // 00E0405A Time Code Low ??
+            15'h202e: dout = {6'b0, fmv_display_tempref, 2'b0};  // 00E0405C TMP REF?? SYS_VSR?
             15'h202f: dout = fmv_fifo_full ? 0 : 16'h2000;  // 00E0405E ? SYS_STS
             15'h2030: dout = fmv_interrupt_enable_register;  // 0E04060
             15'h2031: dout = fmv_interrupt_status_register;  // 0E04062
@@ -488,7 +500,8 @@ module vmpeg (
             15'h204C: dout = fmv_dclk[21:6];  // 0E04098 GEN_SYSCR
             15'h204E: dout = 0;  // e0409c GEN_SYNC_DIFF? Always reads 0 on real machine
             15'h204F: dout = 16'hfe96;  // e0409e GEN_DEC_DELAY? Always changing but negative?
-            15'h2050: dout = {1'b0, fmv_decoding_timestamp[21:7]};  // 00E040A0 Decoding Timestamp
+            15'h2050:
+            dout = {1'b0, fmv_decoder_last_decoded_timestamp};  // 00E040A0 Decoding Timestamp
             15'h2052: dout = {11'b0, fmv_pictures_in_fifo};  // 00E040A4 ?? Pictures in fifo?
             15'h2054: dout = fmv_decoder_frameperiod_90khz;  // E040A8 Picture Rate Only read.
             15'h2055: dout = fmv_display_rate;  // e040aa ?? Display Rate ? Only read.
@@ -521,6 +534,7 @@ module vmpeg (
     bit restart_fmv_dsp_enable_q;
     bit pending_fma_stream_change;
     bit register_update_latch;
+    bit register_update_scroll;
 
     always @(posedge clk) begin
         bus_ack <= 0;
@@ -544,6 +558,7 @@ module vmpeg (
             fma_status_register <= 0;
             fma_stream_number <= 0;
             fmv_dclk <= 0;
+            fmv_dclk_start_video_latched <= 0;
             fmv_decoder_command <= 0;
             fmv_dsp_enable <= 0;
             fmv_frame_rate <= 0;
@@ -555,9 +570,9 @@ module vmpeg (
             fmv_stream_number <= 0;
             fmv_system_command_register <= 0;
             fmv_video_data_input_command_register <= 0;
-            image_width <= 0;
             image_height <= 0;
             image_rt <= 0;
+            image_width <= 0;
             mpeg_ram_enabled <= 0;
             mpeg_ram_enabled_cnt <= 0;
             pending_fma_stream_change <= 0;
@@ -576,37 +591,55 @@ module vmpeg (
         end else begin
 
             if (restart_fmv_dsp_enable_q) fmv_dsp_enable <= 1;
-            if (fmv_decoding_timestamp_updated) fmv_video_data_input_command_register[14] <= 1;
+            if (fmv_decoder_last_decoded_timestamp_updated)
+                fmv_video_data_input_command_register[14] <= 1;
 
-            if (vsync && !vsync_q) begin
-                fmv_interrupt_status_register.vsync <= 1;
-
-                if (register_update_latch) begin
-                    fmv_interrupt_status_register.vcup <= 1;
-                    // Always present on VMPEG when VCUP occurs, never asked for in the driver
-                    // At 0x00e52ed2 there is a check for a solo occurence of VCUP
-                    // This never happens on real hardware since DCL is always there
-                    // resulting into a dead branch in the driver?
-                    fmv_interrupt_status_register.dcl <= 1;
-                    register_update_latch <= 0;
-
-                    latched_display_offset_y <= video_ctrl_x_display[8:0];
-                    latched_display_offset_x <= video_ctrl_y_display[8:0];
-                    latched_window_offset_y <= video_ctrl_decoder_offset_y[8:0];
-                    latched_window_offset_x <= video_ctrl_decoder_offset_x[8:0];
-                    latched_window_width <= video_ctrl_window_width[8:0];
-                    latched_window_height <= video_ctrl_window_height[8:0];
-                end
+            // implementation of playback delay
+            if (fmv_dclk_start_video_latched && fmv_dclk_start_video == fma_dclk) begin
+                fmv_dclk_start_video_latched <= 0;
+                fmv_playback_active <= 1;
             end
 
-            if (fmv_event_sequence_header) begin
+            if (fmv_dclk_pause_video_latched && fmv_dclk_pause_video == fma_dclk) begin
+                fmv_dclk_pause_video_latched <= 0;
+                fmv_interrupt_status_register.pai <= 1;
+            end
+
+            if (vsync && !vsync_q) fmv_interrupt_status_register.vsync <= 1;
+
+            // Either update when scroll==1 and vertical retrace occurs OR
+            // when scroll==0 and a new frame will be displayed
+            if ((!vsync && vsync_q && register_update_latch && register_update_scroll) || 
+                (register_update_latch && fmv_event_potential_picture_starts_display && !register_update_scroll)) begin
+
+                fmv_interrupt_status_register.vcup <= 1;
+                // Always present on VMPEG when VCUP occurs, never asked for in the driver
+                // At 0x00e52ed2 there is a check for a solo occurence of VCUP
+                // This never happens on real hardware since DCL is always there
+                // resulting into a dead branch in the driver?
+                fmv_interrupt_status_register.dcl <= 1;
+                register_update_latch <= 0;
+
+                latched_display_offset_y <= video_ctrl_x_display[8:0];
+                latched_display_offset_x <= video_ctrl_y_display[8:0];
+                latched_window_offset_y <= video_ctrl_decoder_offset_y[8:0];
+                latched_window_offset_x <= video_ctrl_decoder_offset_x[8:0];
+                latched_window_width <= video_ctrl_window_width[8:0];
+                latched_window_height <= video_ctrl_window_height[8:0];
+            end
+
+            if (fmv_event_first_intra_frame_seq_starts_display) begin
                 fmv_interrupt_status_register.seq <= 1;
                 $display("Cause FMV Seq Event");
             end
-            if (fmv_event_group_of_pictures) fmv_interrupt_status_register.gop <= 1;
-            if (fmv_event_picture) begin
+            if (fmv_event_first_intra_frame_gop_starts_display)
+                fmv_interrupt_status_register.gop <= 1;
+            if (fmv_event_picture_starts_display) begin
                 fmv_interrupt_status_register.pic <= 1;
 
+                image_width <= {5'b0, fmv_decoder_width};
+                image_height <= {7'b0, fmv_decoder_height};
+                image_rt <= {8'b0, fmv_decoder_frameperiod_rawhdr};
             end
             if (fmv_event_last_picture_starts_display) fmv_interrupt_status_register.eod <= 1;
             if (fmv_event_program_end) fmv_interrupt_status_register.eii <= 1;
@@ -658,6 +691,8 @@ module vmpeg (
 
             if (clk45tick) begin
                 fma_dclk <= fma_dclk + 1;
+
+                // TODO Concerning slow motion, some changes might be required
                 fmv_dclk <= fmv_dclk + 1;
 
                 if (timer_cnt[15+3:0+3] >= fmv_timer_compare_register) begin
@@ -838,7 +873,8 @@ module vmpeg (
                             fmv_system_command_register <= din;
 
                             if (din[3]) begin  // 0008 Play
-                                fmv_playback_active <= 1;
+                                fmv_dclk_start_video <= fma_dclk + 32'd3000;  // 65ms delay
+                                fmv_dclk_start_video_latched <= 1;
 
                                 // Really correct?
                                 image_width <= {5'b0, fmv_decoder_width};
@@ -853,28 +889,32 @@ module vmpeg (
 
                             if (din[4]) begin  // 0010 Pause
                                 fmv_playback_active <= 0;
-                                fmv_interrupt_status_register.pai <= 1;
+                                fmv_dclk_start_video_latched <= 0;
+
+                                fmv_dclk_pause_video <= fma_dclk + 32'd100;
+                                fmv_dclk_pause_video_latched <= 1;
                             end
 
                             if (din[5]) begin  // 0020 Continue
                                 fmv_playback_active <= 1;
+                                fmv_dclk_start_video_latched <= 0;
                                 fmv_slow_motion <= din[2:0];
                             end
 
                             if (din[6]) begin  // 0040 Step
                                 fmv_single_step <= 1;
+                                fmv_dclk_start_video_latched <= 0;
                             end
 
                             if (din[7]) begin  // 0080 Stop
                                 fmv_playback_active <= 0;
-                                // TODO can't be correct
-                                fmv_decoder_command[6] <= 0;
-                                fmv_decoder_command[1] <= 0;
+                                fmv_dclk_start_video_latched <= 0;
                             end
 
                             if (din[8]) begin  // 0100 Clear FIFO? What to do?
                                 fmv_dsp_enable <= 0;
                                 fmv_playback_active <= 0;
+                                fmv_dclk_start_video_latched <= 0;
                                 restart_fmv_dsp_enable <= 1;
                             end
 
@@ -891,6 +931,7 @@ module vmpeg (
                             if (din[13]) begin  // 2000 Decoder off
                                 fmv_dsp_enable <= 0;
                                 fmv_playback_active <= 0;
+                                fmv_dclk_start_video_latched <= 0;
                                 fmv_reset_persistent_storage <= 1;
                                 $display("FMV Decoder Off");
 
@@ -921,7 +962,8 @@ module vmpeg (
 
                             // 0008 RegsUpd
                             if (din[3]) begin
-                                register_update_latch <= 1;
+                                register_update_latch  <= 1;
+                                register_update_scroll <= din[2];
                                 $display("RegsUpd");
                             end
 

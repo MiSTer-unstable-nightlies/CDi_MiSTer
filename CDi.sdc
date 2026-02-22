@@ -35,3 +35,17 @@ set_false_path -from {emu:emu|cditop:cditop|vmpeg:vmpeg_inst|latched_window_offs
 
 # protection not required because of context
 set_false_path -from {emu:emu|cditop:cditop|vmpeg:vmpeg_inst|fmv_slow_motion*} -to {emu:emu|cditop:cditop|vmpeg:vmpeg_inst|mpeg_video:video|slow_motion_clkddr*}
+
+# protected by latency between latch_frame_for_display and latch_frame_for_display_clk_mpeg
+set_false_path -from {emu:emu|cditop:cditop|vmpeg:vmpeg_inst|mpeg_video:video|yuv_frame_adr_fifo:readyframes|*} -to {emu:emu|cditop:cditop|vmpeg:vmpeg_inst|mpeg_video:video|display_timecode*}
+set_false_path -from {emu:emu|cditop:cditop|vmpeg:vmpeg_inst|mpeg_video:video|yuv_frame_adr_fifo:readyframes|*} -to {emu:emu|cditop:cditop|vmpeg:vmpeg_inst|mpeg_video:video|display_tempref*}
+set_false_path -from {emu:emu|cditop:cditop|vmpeg:vmpeg_inst|mpeg_video:video|yuv_frame_adr_fifo:readyframes|*} -to {emu:emu|cditop:cditop|vmpeg:vmpeg_inst|mpeg_video:video|display_width*}
+set_false_path -from {emu:emu|cditop:cditop|vmpeg:vmpeg_inst|mpeg_video:video|yuv_frame_adr_fifo:readyframes|*} -to {emu:emu|cditop:cditop|vmpeg:vmpeg_inst|mpeg_video:video|display_height*}
+set_false_path -from {emu:emu|cditop:cditop|vmpeg:vmpeg_inst|mpeg_video:video|yuv_frame_adr_fifo:readyframes|*} -to {emu:emu|cditop:cditop|vmpeg:vmpeg_inst|mpeg_video:video|first_intra_frame_of_gop_clk30}
+set_false_path -from {emu:emu|cditop:cditop|vmpeg:vmpeg_inst|mpeg_video:video|yuv_frame_adr_fifo:readyframes|*} -to {emu:emu|cditop:cditop|vmpeg:vmpeg_inst|mpeg_video:video|first_intra_frame_of_seq_clk30}
+
+# protected by last_decoded_timestamp_updated phase latency
+set_false_path -from {emu:emu|cditop:cditop|vmpeg:vmpeg_inst|mpeg_video:video|last_decoded_timestamp_clk_mpeg*} -to {emu:emu|cditop:cditop|vmpeg:vmpeg_inst|mpeg_video:video|last_decoded_timestamp*}
+
+# protected by demuxer_decoding_timestamp_updated_clk_mpeg
+set_false_path -from {emu:emu|cditop:cditop|vmpeg:vmpeg_inst|mpeg_demuxer:video_demuxer|decoding_timestamp*} -to {emu:emu|cditop:cditop|vmpeg:vmpeg_inst|mpeg_video:video|demuxer_decoding_timestamp_clk_mpeg*}
