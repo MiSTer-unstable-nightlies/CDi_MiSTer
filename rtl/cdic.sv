@@ -9,7 +9,6 @@
 
 module cdic (
     input clk,
-    input clk_audio,
     input reset,
 
     // CPU interface
@@ -64,6 +63,10 @@ module cdic (
     bit [15:0] audio_channel_register = 0;
 
     bit [15:0] command_register = 0;
+
+    // Set when writing 1 to data_buffer_register[15]
+    // Reset after the command was accepted
+    bit execute_command = 0;
 
     // DBUF @ 303FFE
     // Bit 0 is toggled on every received sector and
@@ -208,7 +211,6 @@ module cdic (
         .mem_data(mem_cdic_readout),
         .mem_rd(mem_cd_audio_rd),
         .mem_ack(mem_cd_audio_ack),
-        .mem_ack_q(mem_cd_audio_ack_q),
 
         .start_playback(audio_start_playback),
         .stop_playback(audio_stop_playback),
@@ -296,13 +298,18 @@ module cdic (
     end
 
     // Subcode Q data is added at the end of the raw sector data
-    localparam bit [14:0] kWordsPerSubcodeFrame = 12;
+    // The 12 bytes are mapped to 12 words
+    localparam bit [14:0] kWordsPerSubcodeQFrame = 12;
+
+    // Subcode RSTUVW data is written to the data buffers when CDDA mode is in use
+    // The 96 bytes are mapped to 96 words
+    localparam bit [14:0] kWordsPerSubcodeRWFrame = 96;
 
     // 2352 bytes per sector. Always.
     localparam bit [14:0] kCdSectorSize = 2352;
 
     // Total number of words, the CDIC will provide per requested sector
-    localparam bit [14:0] kWordsPerSector = kWordsPerSubcodeFrame + kCdSectorSize / 2;
+    localparam bit [14:0] kWordsPerSector = kCdSectorSize / 2 + kWordsPerSubcodeRWFrame + kWordsPerSubcodeQFrame;
 
     // Index of word in CD sector. Useful for selecting specific words
     bit [14:0] sector_word_index = 0;
@@ -358,6 +365,7 @@ module cdic (
         if (reset) begin
             data_target_buffer <= 0;
             audio_target_buffer <= 0;
+            execute_command <= 0;
             bus_ack <= 0;
             time_register <= 0;
             command_register <= 0;
@@ -403,6 +411,9 @@ module cdic (
             end
 
             if (cd_data_valid && cd_reading_active) begin
+                // Later than on real hardware but should be fine.
+                data_buffer_register[15] <= 0;
+
                 sector_word_index <= sector_word_index + 1;
 
                 // Reading Order of MODE2 Header Information
@@ -515,6 +526,11 @@ module cdic (
                 if (read_raw && sector_word_index == 1176) begin
                     cd_data_target_adr <= !data_target_buffer ? 13'h992 : 13'h492;
                 end
+
+                // Move target address to write the RW subchannel data next
+                if (read_raw && sector_word_index == 1176 + 12) begin
+                    cd_data_target_adr <= !data_target_buffer ? 13'h500 : 13'h000;
+                end
             end
 
             // Audio map finished? Cause an IRQ to inform the CPU
@@ -596,16 +612,15 @@ module cdic (
                 use_sector_data <= 1;
             end
 
-            if (data_buffer_register[15]) begin
+            if (execute_command) begin
+                execute_command <= 0;
                 x_buffer_register[15] <= 1'b0;
-                // as soon as bit 15 is set, the command is parsed and must be reset directly afterwards
-                data_buffer_register[15] <= 0;
-
                 read_cdda <= 0;
                 read_raw <= 0;
 
                 case (command_register)
                     16'h23: begin
+                        data_buffer_register[15] <= 0;  // TODO really instant?
                         $display("CDIC Command: Stop disc");
                         cd_seek_lba <= time_register_as_lba;
                         read_mode2 <= 0;
@@ -614,15 +629,18 @@ module cdic (
                         // But it won't work. It needs to be delayed. spin_down_cnt will do the job
                     end
                     16'h24: begin
+                        data_buffer_register[15] <= 0;  // TODO really instant?
                         $display("CDIC Command: Reset Mode 2");
                         cd_seek_lba <= time_register_as_lba;
                         read_mode2  <= 1;
                     end
                     16'h2b: begin
                         // Unknown purpose
+                        data_buffer_register[15] <= 0;  // TODO really instant?
                         $display("CDIC Command: Stop CDDA?");
                     end
                     16'h2e: begin
+                        data_buffer_register[15] <= 0;  // TODO really instant?
                         $display("CDIC Command: Update");
                     end
                     16'h27: begin
@@ -651,6 +669,7 @@ module cdic (
                         read_mode2 <= 0;
                     end
                     16'h2c: begin
+                        data_buffer_register[15] <= 0;  // TODO really instant?
                         $display("CDIC Command: Seek");
                         // MAME and cdiemu implement seek as Read Mode 1
                         cd_reading_active <= 1;
@@ -766,6 +785,7 @@ module cdic (
                             $display("CDIC Write Data Buffer Register %x %x", address[13:1], din);
                             data_buffer_register <= din;
 
+                            if (din[15]) execute_command <= 1;
                             if (!din[14]) begin
                                 // Reset everything related to CD reading.
                                 cd_reading_active <= 0;
@@ -836,8 +856,6 @@ module cdic (
                         default: begin
                         end
                     endcase
-
-
                 end
             end
         end

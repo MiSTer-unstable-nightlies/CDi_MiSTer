@@ -1,4 +1,5 @@
 // Include common routines
+#include <sys/types.h>
 #include <verilated.h>
 #include <verilated_fst_c.h>
 #include <verilated_vcd_c.h>
@@ -40,7 +41,7 @@ char GetPictureType(int val) {
     }
 }
 
-int write_bmp(const char *path, int width, int height, uint8_t *pixels) {
+int WriteBmp(const char *path, int width, int height, uint8_t *pixels) {
     FILE *fh = fopen(path, "wb");
     if (!fh) {
         return 0;
@@ -86,6 +87,7 @@ typedef struct {
 #define BCD(v) ((uint8_t)((((v) / 10) << 4) | ((v) % 10)))
 
 struct subcode {
+    // Subcode Q
     uint16_t control;
     uint16_t track;
     uint16_t index;
@@ -98,8 +100,11 @@ struct subcode {
     uint16_t mode1_afrac;
     uint16_t mode1_crc0;
     uint16_t mode1_crc1;
+
+    // Subcode RW in interleaved form
+    uint16_t rw[96];
 };
-static_assert(sizeof(struct subcode) == 24);
+static_assert(sizeof(struct subcode) == (12 + 96) * 2);
 
 struct toc_entry toc_buffer[100];
 int toc_entry_count = 0;
@@ -116,6 +121,7 @@ const int height = 312;
 const int size = width * height * 3;
 
 FILE *f_cd_bin{nullptr};
+FILE *f_sub_bin{nullptr};
 
 template <typename T, typename U> constexpr T BIT(T x, U n) noexcept {
     return (x >> n) & T(1);
@@ -124,7 +130,7 @@ template <typename T, typename U> constexpr T BIT(T x, U n) noexcept {
 bool press_button_signal{false};
 bool print_instructions{false};
 
-void signal_handler(int signum, siginfo_t *info, void *context) {
+void SignalHandler(int signum, siginfo_t *info, void *context) {
     fprintf(stderr, "Received signal %d\n", signum);
 
     switch (signum) {
@@ -151,7 +157,7 @@ void signal_handler(int signum, siginfo_t *info, void *context) {
 }
 
 // got from mame
-uint32_t lba_from_time(uint32_t m_time) {
+uint32_t LbaFromTime(uint32_t m_time) {
     const uint8_t bcd_mins = (m_time >> 24) & 0xff;
     const uint8_t mins_upper_digit = bcd_mins >> 4;
     const uint8_t mins_lower_digit = bcd_mins & 0xf;
@@ -216,6 +222,22 @@ void check_scramble(int lba, uint8_t *buffer) {
         if (mode2_lba == lba && mode == 2) {
             descramble_sector(buffer);
         }
+    }
+}
+
+void reinterleave_rw_subchannels(const uint8_t rw[6][12], uint16_t raw[96]) {
+    memset(raw, 0, sizeof(uint16_t) * 96);
+
+    for (int symbol = 0; symbol < 96; symbol++) {
+        uint8_t out = 0;
+
+        for (int ch = 0; ch < 6; ch++) {
+            uint8_t bit = (rw[ch][symbol >> 3] >> (7 - (symbol & 7))) & 1;
+
+            out |= bit << (5 - ch);
+        }
+
+        raw[symbol] = htons(out);
     }
 }
 
@@ -335,7 +357,9 @@ class CDi {
     std::chrono::_V2::system_clock::time_point start;
     static constexpr uint32_t kSectorHeaderSize{12};
     static constexpr uint32_t kSectorSize{2352};
-    static constexpr uint32_t kWordsPerSubcodeFrame{12};
+    static constexpr uint32_t kSubcodeRWSize{96};
+    static constexpr uint32_t kSubcodeQSize{12};
+    static constexpr uint32_t kWordsPerSubcodeFrame{kSubcodeQSize + kSubcodeRWSize};
     static constexpr uint32_t kWordsPerSector{kWordsPerSubcodeFrame + kSectorSize / 2};
 
     uint32_t get_pixel_value(uint32_t x, uint32_t y) {
@@ -710,7 +734,7 @@ class CDi {
 
 #ifdef SIMULATE_RC5
         if (time30mhz >= rc5_fliptime) {
-            dut.rootp->emu__DOT__rc_eye = rc5_nextstate;
+            SetRcEye(rc5_nextstate);
 
             fprintf(stderr, "Set RC5!\n");
             char buffer[100];
@@ -734,39 +758,6 @@ class CDi {
         if (time30mhz == 1300000)
             printf("Media change!\n");
 
-#ifdef SCC68070
-
-        if (dut.rootp->emu__DOT__cditop__DOT__as && !dut.rootp->emu__DOT__cditop__DOT__write_strobe &&
-            dut.rootp->emu__DOT__cditop__DOT__bus_ack && dut.rootp->emu__DOT__cditop__DOT__addr_byte < 0x60) {
-            switch (dut.rootp->emu__DOT__cditop__DOT__addr_byte >> 2) {
-            case 0: // Ignore Reset SP
-            case 1: // Ignore Reset PC
-                break;
-            case 2:
-                printf("Exception - Bus error\n");
-                break;
-            case 3:
-                printf("Exception - Address error\n");
-                break;
-            case 4:
-                printf("Exception - Illegal instruction\n");
-                status = 1;
-                break;
-            case 5:
-                printf("Exception - Division by zero\n");
-                status = 1;
-                break;
-            case 8:
-                printf("Exception - Privilege violation \n");
-                break;
-            default:
-                printf("Exception - %d ??? \n", dut.rootp->emu__DOT__cditop__DOT__addr_byte >> 2);
-                break;
-            }
-        }
-
-#endif
-
         dut.rootp->emu__DOT__nvram_media_change = (time30mhz == 2000);
         // Simulate CD data delivery from HPS
         if (dut.rootp->emu__DOT__cd_hps_req && dut.rootp->emu__DOT__cd_hps_ack == 0 &&
@@ -774,27 +765,55 @@ class CDi {
             assert(dut.rootp->emu__DOT__cd_hps_ack == 0);
             dut.rootp->emu__DOT__cd_hps_ack = 1;
 
-            uint32_t lba = dut.rootp->emu__DOT__cd_hps_lba;
+            int32_t lba = dut.rootp->emu__DOT__cd_hps_lba;
             uint32_t m_time = dut.rootp->emu__DOT__cditop__DOT__cdic_inst__DOT__time_register;
 
-            uint32_t reference_lba = lba_from_time(m_time);
+            uint32_t reference_lba = LbaFromTime(m_time);
             // assert(lba == reference_lba);
             // assert(lba >= 150);
-
-            if (lba < 150)
-                lba += 150;
             uint32_t file_offset = (lba - 150) * kSectorSize;
 
-            printf("Request CD Sector %x %x %x\n", m_time, lba, file_offset);
+            if (lba >= 0) {
+                if (lba < 150)
+                    lba += 150;
 
-            int res = fseek(f_cd_bin, file_offset, SEEK_SET);
-            assert(res == 0);
+                printf("Request CD Sector %x %x %x\n", m_time, lba, file_offset);
 
-            fread(hps_buffer, 1, kSectorSize, f_cd_bin);
+                int res = fseek(f_cd_bin, file_offset, SEEK_SET);
+                assert(res == 0);
 
-            check_scramble(lba, reinterpret_cast<uint8_t *>(hps_buffer));
+                res = fread(hps_buffer, 1, kSectorSize, f_cd_bin);
+                assert(res == kSectorSize);
+
+                check_scramble(lba, reinterpret_cast<uint8_t *>(hps_buffer));
+            } else {
+                // This is TOC area. Just zero all the data
+                memset(hps_buffer, 0, kSectorSize);
+            }
+
+            // Subcode Q
             struct subcode &out = *reinterpret_cast<struct subcode *>(&hps_buffer[kSectorSize / 2]);
             subcode_data(dut.rootp->emu__DOT__cd_hps_lba, out);
+
+            // Subcode RW from .sub file
+            uint8_t rw[kSubcodeRWSize];
+            // First we read the raw bytes
+            file_offset = (lba - 150) * kSubcodeRWSize;
+            if (f_sub_bin) {
+                int res = fseek(f_sub_bin, file_offset, SEEK_SET);
+                assert(res == 0);
+                res = fread(rw, 1, kSubcodeRWSize, f_sub_bin);
+                assert(res == kSubcodeRWSize);
+            } else {
+                memset(rw, 0, sizeof(rw));
+            }
+            /*
+            // Then we need to convert them to words
+            for (int i = 0; i < kSubcodeRWSize; i++) {
+                out.rw[i] = htons(rw[i]);
+            }*/
+            reinterleave_rw_subchannels(reinterpret_cast<uint8_t (*)[12]>(&rw[24]), out.rw);
+
             hps_buffer_index = 0;
         }
 
@@ -877,6 +896,36 @@ class CDi {
         if (dut.rootp->emu__DOT__cditop__DOT__scc68070_0__DOT__uart_tx_data_valid) {
             fputc(dut.rootp->emu__DOT__cditop__DOT__scc68070_0__DOT__uart_transmit_holding_register, f_uart);
             fflush(f_uart);
+        }
+
+        if (dut.rootp->emu__DOT__cditop__DOT__scc68070_0__DOT__tg68__DOT__tg68kdotcinst__DOT__trapd &&
+            dut.rootp->emu__DOT__cditop__DOT__scc68070_0__DOT__clkena_in) {
+            int vector = dut.rootp->emu__DOT__cditop__DOT__scc68070_0__DOT__tg68__DOT__tg68kdotcinst__DOT__trap_vector;
+            switch (vector >> 2) {
+            case 0: // Ignore Reset SP
+            case 1: // Ignore Reset PC
+                break;
+            case 2:
+                printf("Exception - Bus error\n");
+                break;
+            case 3:
+                printf("Exception - Address error\n");
+                break;
+            case 4:
+                printf("Exception - Illegal instruction\n");
+                status = 1;
+                break;
+            case 5:
+                printf("Exception - Division by zero\n");
+                status = 1;
+                break;
+            case 8:
+                printf("Exception - Privilege violation \n");
+                break;
+            default:
+                // printf("Exception - %d ??? \n", dut.rootp->emu__DOT__cditop__DOT__addr_byte >> 2);
+                break;
+            }
         }
 
         // Trace System Calls
@@ -1031,7 +1080,7 @@ class CDi {
                     dut.rootp->emu__DOT__cditop__DOT__vmpeg_inst__DOT__video__DOT__fifo_level,
                     dut.rootp->emu__DOT__cditop__DOT__vmpeg_inst__DOT__video__DOT__pictures_in_fifo_clk_mpeg);
 
-            write_bmp(bmp_name, w, h, pixels);
+            WriteBmp(bmp_name, w, h, pixels);
 
             free(pixels);
             fmv_frame_cnt++;
@@ -1157,6 +1206,13 @@ class CDi {
         fmv_index++;
     }
 
+    void SetRcEye(int val) {
+        if (val)
+            dut.USER_IN |= 0b100;
+        else
+            dut.USER_IN &= ~0b100;
+    }
+
     CDi(int i) {
         instanceid = i;
 
@@ -1201,7 +1257,7 @@ class CDi {
         dut.eval();
         dut.rootp->emu__DOT__debug_uart_fake_space = false;
         dut.rootp->emu__DOT__img_size = 4096;
-        dut.rootp->emu__DOT__rc_eye = 1; // RC Eye signal is idle high
+        SetRcEye(1); // RC Eye signal is idle high
 
         dut.rootp->emu__DOT__tvmode_ntsc = false;
 
@@ -1228,8 +1284,8 @@ class CDi {
 
         start = std::chrono::system_clock::now();
 #ifdef TRACE
-        do_trace = false;
-        fprintf(stderr, "Trace off!\n");
+        // do_trace = false;
+        // fprintf(stderr, "Trace off!\n");
 #endif
 
 #ifdef SIMULATE_RC5
@@ -1299,7 +1355,7 @@ int main(int argc, char **argv) {
 #endif
 
     struct sigaction sa;
-    sa.sa_sigaction = signal_handler;
+    sa.sa_sigaction = SignalHandler;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_SIGINFO;
 
@@ -1316,10 +1372,12 @@ int main(int argc, char **argv) {
 
     switch (machineindex) {
     case 0:
-        f_cd_bin = fopen("images/addams.bin", "rb");
+        f_cd_bin = fopen("images/karaoke.bin", "rb");
+        f_sub_bin = fopen("images/karaoke.sub", "rb");
         break;
     case 1:
-        f_cd_bin = fopen("images/braindead13.bin", "rb");
+        f_cd_bin = fopen("images/Apprentice_USA_single.bin", "rb");
+        prepare_artificial_audiocd_toc();
         break;
     case 2:
         f_cd_bin = fopen("images/LuckyLuke.bin", "rb");
@@ -1355,6 +1413,8 @@ int main(int argc, char **argv) {
     machine.dut.rootp->emu__DOT__config_auto_play = argc >= 3 ? 1 : 0;
     if (machine.dut.rootp->emu__DOT__config_auto_play) {
         fprintf(stderr, "Autoplay enabled!\n");
+    } else {
+        fprintf(stderr, "Autoplay disabled!\n");
     }
 
     while (status == 0 && !Verilated::gotFinish()) {
