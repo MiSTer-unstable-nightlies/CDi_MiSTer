@@ -1,17 +1,21 @@
 # TODOs and known issues
 
-* MPEG Video output sometimes later, sometimes earlier? Only on FPGA?
-* mv_pause() causes wrong data in FPGA? Can be reproduced since 260123 with Addams Family Disc 2
-* Integration test to confirm equal output of MPEG video during simulation vs synthesis
-    * MiSTer only Register for audio loudness analysis and for detecting a white dot from CD-i software
-    * Automatic check of audio vs video sync
-    * Playing a short video (from CD!) again and again on repeat
+* Check if speed of mouse device really is the max, a CD-i can take
+    * Also check the accumulator
+* "INXS - Listen Like Thieves (USA)" has distorted audio
+    * Distorted on 260628
+    * Seems to work on 260502
+    * Pregap related? Might be a problem on Linux side
+* "Litil Divil" has as bouncing image when taking control of the character.
+    * Only on 60 Hz?
+* "Burn-Cycle (USA Europe) (Disc 1) (The Game)" has a pop during the cutscene when entering the bar.
+    * Problem is absent in German version
+* "Chaos Control"
+    * Video glitches when pausing and resuming. MPEG stream is actually damaged! Even mplayer has some issues.
 * Random hang of playback controls in Addams Family Disc 2. Movie still playing. Sudden rainbow colors.
     * Reproduced by frequently pausing and resuming
     * No regression. Always present since 251123
-* Randomly no audio after pause in Addams Family
-    * Reproducable with 260131 and 260222
-    * Not occuring with 260123? Or very unlikely?
+    * Can be reproduced on cdiemu as well
 * Randomly no audio in Mad Dog McCree? Unclear reproduction
 * Check random audio video out of sync (e.g. Mad Dog McCree)
 * Check correct timing of DVC clipping functionality when scroll bit is reset
@@ -29,7 +33,6 @@
     * Might still stutter. Analysis required.
 * "Mutant Rampage - Bodyslam" has a tendency to freeze?
 * "The Last Bounty Hunter", "Drug Wars", "Mad Dog 2", "Who Shot Johnny Rock?" have regressions (works in rc2)?
-* "Chaos Control" has video glitches?
 * "The Lost Ride" has video and audio glitches
     * It changes Sequence Parameters on the fly
 * "Crime Patrol" has video glitches?
@@ -59,7 +62,7 @@
     * Possible discs? "Philips CDI Format Test Disc 1 (Europe)" and a disc by Zeneca Pharmaceuticals Group, "An Interactive Medical Program"
 * Possibly adding support for the Quizard arcade hardware
 
-## Low priority
+## Low priority and crazy ideas
 
 * Try to utilize 24 bit audio sample size with HDMI, because 16 bit are not enough for CD-i audio hardware
     * The Mono I hardware has the option to mix 2x 16 bit together as single mono output.
@@ -69,4 +72,8 @@
     * It might not even be required at all.
 * Implement the speed setting of the 22ER9017 Touchpad
     * 22ER9021 should be enough right now
-
+* Integration test to confirm equal output of MPEG video during simulation vs synthesis
+    * MiSTer only Register for audio loudness analysis and for detecting a white dot from CD-i software
+    * Automatic check of audio vs video sync
+    * Playing a short video (from CD!) again and again on repeat
+    
