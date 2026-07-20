@@ -2,12 +2,6 @@
 
 * Check if speed of mouse device really is the max, a CD-i can take
     * Also check the accumulator
-* "INXS - Listen Like Thieves (USA)" has distorted audio
-    * Distorted on 260628
-    * Seems to work on 260502
-    * Pregap related? Might be a problem on Linux side
-* "Litil Divil" has as bouncing image when taking control of the character.
-    * Only on 60 Hz?
 * "Burn-Cycle (USA Europe) (Disc 1) (The Game)" has a pop during the cutscene when entering the bar.
     * Problem is absent in German version
 * "Chaos Control"
@@ -25,8 +19,11 @@
     * Will be broken again with the addition of frame synced updates
 * Frequency response of CDIC and MPEG audio output might not be 100% accurate
 * Add support for an emulated Peacekeeper Revolver Light Gun
-* "Uncover featuring Tatjana (Europe)" regressions?
+* "Uncover featuring Tatjana (Europe)" graphical issues
     * Corruption of MPEG footage in single step mode?
+    * Broken since at least 260116
+    * Application crashes on 251228 and 260104
+    * Working last on? Did it work at all?
 * Regression of "Historia del Arte Español" (working in DVC rc2)
     * Blank video?
 * Fix Christmas Crisis bonus ride
