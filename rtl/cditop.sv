@@ -15,7 +15,7 @@ module cditop (
     input [1:0] debug_force_video_plane,
     input [1:0] debug_limited_to_full,
     input audio_cd_in_tray,
-    input debug_disable_audio_attenuation,
+    input [2:0] config_audio_mixing,
 
     output bit ce_pix,
     output bit HBlank,
@@ -213,7 +213,7 @@ module cditop (
     // video mixing. But we won't do that here and use the digital
     // one instead
     wire mcd212_vsd;
-
+    /*verilator tracing_off*/
     mcd212 mcd212_inst (
         .clk(clk30),
         .reset,
@@ -250,7 +250,7 @@ module cditop (
         // Don't starve the CPU during DMA transfers
         .disable_cpu_starve(config_disable_cpu_starve || cdic_dma_ack || cdic_dma_req)
     );
-
+    /*verilator tracing_on*/
 
     // DMA signals from CPU
     wire vmpeg_dma_ack;
@@ -564,7 +564,7 @@ module cditop (
 `endif
     wire signed [15:0] att_audio_left;
     wire signed [15:0] att_audio_right;
-
+    /*verilator tracing_off*/
     dual_ad7528_attenuation att (
         .clk(clk30),
         .datadac(datadac),
@@ -580,8 +580,35 @@ module cditop (
         .audio_right_out(att_audio_right)
     );
 
-    assign audio_left  = debug_disable_audio_attenuation ? cdic_audio_left : att_audio_left;
-    assign audio_right = debug_disable_audio_attenuation ? cdic_audio_right : att_audio_right;
+    always_ff @(posedge clk30) begin
+        case (config_audio_mixing)
+            0: begin  // Original
+                audio_left  <= att_audio_left;
+                audio_right <= att_audio_right;
+            end
+            1: begin  // CDIC unmixed
+                audio_left  <= cdic_audio_left;
+                audio_right <= cdic_audio_right;
+            end
+            2: begin  // VMPEG unmixed
+                audio_left  <= mpeg_audio_left;
+                audio_right <= mpeg_audio_right;
+            end
+            3: begin  // VMPEG only left
+                audio_left  <= mpeg_audio_left;
+                audio_right <= mpeg_audio_left;
+            end
+            4: begin  // VMPEG only right
+                audio_left  <= mpeg_audio_right;
+                audio_right <= mpeg_audio_right;
+            end
+            default: begin  // Just to be sure
+                audio_left  <= att_audio_left;
+                audio_right <= att_audio_right;
+            end
+        endcase
+
+    end
 
     u3090mg u3090mg (
         .clk(clk30),
@@ -600,6 +627,7 @@ module cditop (
         .cd_img_mounted(cd_img_mounted),
         .tray_is_closed
     );
+    /*verilator tracing_on*/
 
     always_comb begin
         slave_bus_ack = dtackslaven && !dtackslaven_q;

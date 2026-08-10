@@ -1,5 +1,8 @@
 # TODOs and known issues
 
+* "Freeze Picture" feature of VCDs seems to cause issues
+* Regressions with "The Lost Ride"
+* Implement optional 50/15 µsec emphasis for ADPCM (and CDDA?)
 * Check if speed of mouse device really is the max, a CD-i can take
     * Also check the accumulator
 * "Chaos Control"
@@ -17,25 +20,20 @@
     * Will be broken again with the addition of frame synced updates
 * Frequency response of CDIC and MPEG audio output might not be 100% accurate
 * Add support for an emulated Peacekeeper Revolver Light Gun
-* "Uncover featuring Tatjana (Europe)" graphical issues
-    * Corruption of MPEG footage in single step mode?
-    * Broken since at least 260116
-    * Application crashes on 251228 and 260104
-    * Working last on? Did it work at all?
+* "Uncover featuring Tatjana (Europe)"
+    * On the main menu, the lowest card "1 GAME" is broken. Sometimes it just stays open
+      This is reproducible with 2607020, 260131
+      Issue also present on cdiemu
 * Regression of "Historia del Arte Español" (working in DVC rc2)
     * Blank video?
 * Fix Christmas Crisis bonus ride
     * Might still stutter. Analysis required.
 * "Mutant Rampage - Bodyslam" has a tendency to freeze?
 * "The Last Bounty Hunter", "Drug Wars", "Mad Dog 2", "Who Shot Johnny Rock?" have regressions (works in rc2)?
-* "The Lost Ride" has video and audio glitches
-    * It changes Sequence Parameters on the fly
 * "Crime Patrol" has video glitches?
 * "Solar Crusade" has video glitches?
 * "Brain Dead 13" has video glitches when switching MPEG streams
 * "The Secret of Nimh" (Philips Edition) has the wrong frame rate? Sometimes?
-* Slow motion with VCDs is desyncing audio and video
-    * Too many frames in output FIFO
 * Leaving the cake Puzzle in 7th Guest freezes (everytime?)
 * Sound bugs on the police procedures disk?
 * Find a better solution for reducing CPU speed
@@ -44,7 +42,6 @@
     * PSX core seems to halt the whole machine to avoid this situation
 * Fix regression: Audio hiccups during Philips Logo in Burn:Cycle
     * A workaround is CPU overclocking
-* Investigate input responsiveness (skipped events?)
 * Fix hang on audio track stop or change in media player
 * Cheat support?
 * Fix reset behaviour (Core is sometimes hanging after reset)
