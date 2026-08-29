@@ -10,7 +10,7 @@ A2 contains the driver struct
     long* (0x086, A2)  Address of DMA unit
         * (0x08a, A2)
     shrt* (0x08c, A2)
-    long* (0x08e, A2)  Function Pointer for IRQ
+    long* (0x08e, A2)  Function Pointer for XBUF IRQ
     shrt* (0x092, A2)  0x3ffe DBUF is stored here during IRQ
     shrt* (0x094, A2)  
     long* (0x09e, A2)  
@@ -19,11 +19,11 @@ A2 contains the driver struct
     shrt* (0x0ae, A2)
     shrt* (0x0be, A2)  
     long* (0x114, A2)
-    long* (0x128, A2)  Function pointer for IRQ
+    long* (0x128, A2)  Function pointer for ABUF IRQ
     shrt* (0x12c, A2)  0x3ffa AUDCTL is stored here during IRQ
     shrt* (0x12e, A2)
     shrt* (0x130, A2)
-    shrt* (0x13a, A2)  Address of next audio map buffer?
+    shrt  (0x13a, A2)  Address of next audio map buffer?
     char* (0x150, A2)  Cleared on 042b7ce
                        Set to #1 on 042b424
     char* (0x152, A2)  Set to 0 when playback has stopped ?
@@ -34,13 +34,19 @@ A2 contains the driver struct
     long* (0x18e, A2)
     long* (0x198, A2)
 
+# cdi200.rom function pointers
 
-0042a9ce    Function which does a DMA transfer to CDIC memory
-            D0 Length?
-            D2 Target address in CDIC memory
-0042b86e    Function which prepares audio buffer 0x2800 for playback
-0042b050    IRQ Handler
-0042b744    Possible function to insert into (0x128,A2)
-00429e12    setstat ss_pause
+    0042a9ce    Function which does a DMA transfer to CDIC memory
+                D0 Length?
+                D2 Target address in CDIC memory
+    0042b86e    Function which prepares audio buffer 0x2800 for playback
+    0042b050    IRQ Handler
+    0042b744    Possible function to insert into (0x128,A2)
+    00429e12    setstat ss_pause
 
+# cdi220b.rom function pointers
+
+    0042b048    IRQ Handler
+    0042a36c    DBUF IRQ Handler
+    0042b73c    ABUF IRQ Handler
 

@@ -11,6 +11,7 @@ module audiodecoder (
     input clk,
     input reset,
     input reset_filter_on_start,
+    input abort_playback,
 
     output bit [12:0] mem_addr,
     output bit mem_rd,
@@ -159,6 +160,7 @@ module audiodecoder (
 
     bit signed [15:0] old_samples[2][2];
     bit signed [31:0] mac;
+    bit abort_playback_latch;
 
     always_ff @(posedge clk) begin
         disable_audiomap <= 0;
@@ -179,10 +181,13 @@ module audiodecoder (
             old_samples <= '{'{0, 0}, '{0, 0}};
             group_cnt <= 0;
             out.write <= 0;
+            abort_playback_latch <= 0;
         end else begin
+            if (abort_playback) abort_playback_latch <= 1;
 
             case (decoder_state)
                 IDLE: begin
+                    abort_playback_latch <= 0;
                     if (start_playback) begin
                         // Coding can be read from memory or forced
                         if (cdda_mode) begin
@@ -289,6 +294,10 @@ module audiodecoder (
                         sample_channel <= channel;
                     end
 
+                    if (abort_playback_latch) begin
+                        decoder_state <= IDLE;
+                        abort_playback_latch <= 0;
+                    end
                 end
                 CALC2: begin
                     old_samples[sample_channel][1] <= old_samples[sample_channel][0];
@@ -298,8 +307,9 @@ module audiodecoder (
 
                     if (data_cnt == SAMPLES_PER_BLOCK) begin
                         if (block_cnt == last_block_index) begin
-                            if ((group_cnt == LAST_GROUP_INDEX)) begin
+                            if ((group_cnt == LAST_GROUP_INDEX) || abort_playback_latch) begin
                                 decoder_state <= IDLE;
+                                abort_playback_latch <= 0;
                             end else begin
                                 block_addr <= block_addr + BLOCK_SIZE;  // group has 128 byte size
                                 decoder_state <= EVALHEADER;

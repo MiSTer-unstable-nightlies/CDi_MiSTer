@@ -1,6 +1,7 @@
 // Include common routines
 #include <algorithm>
 #include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
@@ -17,6 +18,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdint>
+#include <png.h>
 
 #include "crc.h"
 #include "hle.h"
@@ -32,6 +34,10 @@
 #define SLAVE
 #define TRACE
 // #define SIMULATE_RC5
+// #define TRACE_ON_FMA
+// #define TRACE_ON_FMV
+// #define TRACE_FROM_START
+// #define TRACE_ON_CD_REQUEST
 
 #define PL_MPEG_IMPLEMENTATION
 #include "pl_mpeg_pc.h"
@@ -118,6 +124,37 @@ int WriteRgbBmp(const char *path, int width, int height, int vertical_scale, con
     return file_size;
 }
 
+// Writes the simulator's RGB framebuffer as a vertically scaled PNG.
+int WriteRgbPng(const char *path, int width, int height, int vertical_scale, const uint8_t *pixels) {
+    FILE *file = fopen(path, "wb");
+    if (!file)
+        return 0;
+
+    png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
+    png_infop info = png ? png_create_info_struct(png) : nullptr;
+    if (!png || !info || setjmp(png_jmpbuf(png))) {
+        if (png)
+            png_destroy_write_struct(&png, info ? &info : nullptr);
+        fclose(file);
+        return 0;
+    }
+
+    const int output_height = height * vertical_scale;
+    png_init_io(png, file);
+    png_set_IHDR(png, info, width, output_height, 8, PNG_COLOR_TYPE_RGB, PNG_INTERLACE_NONE,
+                 PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+    png_write_info(png, info);
+
+    std::vector<png_bytep> rows(output_height);
+    for (int row = 0; row < output_height; row++)
+        rows[row] = const_cast<png_bytep>(pixels + (row / vertical_scale) * width * 3);
+    png_write_image(png, rows.data());
+    png_write_end(png, nullptr);
+    png_destroy_write_struct(&png, &info);
+    fclose(file);
+    return 1;
+}
+
 typedef struct {
     unsigned int width;
     unsigned int height;
@@ -184,6 +221,16 @@ template <typename T, typename U> constexpr T BIT(T x, U n) noexcept {
 volatile sig_atomic_t press_button1_signal{false};
 volatile sig_atomic_t toggle_debug_signal{false};
 bool print_instructions{false};
+
+void mount_image(const char *path) {
+    if (f_cd_bin) {
+        fclose(f_cd_bin);
+        f_cd_bin = nullptr;
+    }
+
+    f_cd_bin = fopen(path, "rb");
+    assert(f_cd_bin);
+}
 
 void SignalHandler(int signum, siginfo_t *info, void *context) {
     switch (signum) {
@@ -378,6 +425,10 @@ class CDi {
     int frame_index = 0;
     int fmv_frame_cnt{0};
 
+    void EnablePngFrames() {
+        write_png_frames = true;
+    }
+
   private:
     FILE *f_audio_left{nullptr};
     FILE *f_audio_right{nullptr};
@@ -387,6 +438,7 @@ class CDi {
     FILE *f_fmv{nullptr};
     FILE *f_fmv_m1v{nullptr};
     FILE *f_executed_events{nullptr};
+    bool write_png_frames{false};
 
     int fmv_index{0};
     /// @brief Used to decide whether a new index must be created
@@ -413,7 +465,17 @@ class CDi {
     bool executing_dvc_rom_instructions{false};
 
     int instanceid;
-    enum class InputKind { Button1, Button2, Analog, TraceOn, TraceOff, InstructionsOn, InstructionsOff, Quit };
+    enum class InputKind {
+        Button1,
+        Button2,
+        Buttons1And2,
+        Analog,
+        TraceOn,
+        TraceOff,
+        InstructionsOn,
+        InstructionsOff,
+        Quit
+    };
     struct InputEvent {
         uint64_t frame;
         InputKind kind;
@@ -763,6 +825,8 @@ class CDi {
             kind = InputKind::Button1;
         else if (command == "b2" || command == "button2")
             kind = InputKind::Button2;
+        else if (command == "b1b2" || command == "both")
+            kind = InputKind::Buttons1And2;
         else if (command == "trace_on")
             kind = InputKind::TraceOn;
         else if (command == "trace_off")
@@ -777,7 +841,8 @@ class CDi {
             fprintf(stderr, "%s:%u: unknown input command '%s'\n", source, line_number, command.c_str());
             return false;
         }
-        if ((kind == InputKind::Button1 || kind == InputKind::Button2) && hold_frames == 0) {
+        if ((kind == InputKind::Button1 || kind == InputKind::Button2 || kind == InputKind::Buttons1And2) &&
+            hold_frames == 0) {
             fprintf(stderr, "%s:%u: hold_frames must be at least one\n", source, line_number);
             return false;
         }
@@ -861,6 +926,11 @@ class CDi {
         case InputKind::Button2:
             fprintf(f_executed_events, "%d b2 %u\n", frame_index, event.hold_frames);
             break;
+        case InputKind::Buttons1And2:
+            // Write replayable individual events at the same frame.
+            fprintf(f_executed_events, "%d b1 %u\n%d b2 %u\n", frame_index, event.hold_frames, frame_index,
+                    event.hold_frames);
+            break;
         case InputKind::Analog:
             fprintf(f_executed_events, "%d analog %d %d\n", frame_index, static_cast<int8_t>(event.analog_x),
                     static_cast<int8_t>(event.analog_y));
@@ -905,12 +975,23 @@ class CDi {
             RecordExecutedInputEvent(event);
             switch (event.kind) {
             case InputKind::Button1:
-            case InputKind::Button2: {
-                const unsigned int button = event.kind == InputKind::Button1 ? 0 : 1;
-                held_buttons |= 1u << button;
-                button_release_frame[button] =
-                    std::max(button_release_frame[button], static_cast<uint64_t>(frame_index) + event.hold_frames);
-                fprintf(stderr, "Press Button %u at frame %d\n", button + 1, frame_index);
+            case InputKind::Button2:
+            case InputKind::Buttons1And2: {
+                const unsigned int buttons = event.kind == InputKind::Button1   ? 1u
+                                             : event.kind == InputKind::Button2 ? 2u
+                                                                                : 3u;
+                held_buttons |= buttons;
+                for (unsigned int button = 0; button < 2; button++) {
+                    if (buttons & (1u << button)) {
+                        button_release_frame[button] = std::max(button_release_frame[button],
+                                                                static_cast<uint64_t>(frame_index) + event.hold_frames);
+                    }
+                }
+                fprintf(stderr, "Press Button%s%s at frame %d\n", buttons & 1 ? " 1" : "",
+                        buttons == 3  ? " + 2"
+                        : buttons & 2 ? " 2"
+                                      : "",
+                        frame_index);
                 break;
             }
             case InputKind::Analog:
@@ -1102,8 +1183,9 @@ class CDi {
         }
 #endif
 
+        // Make a print of the current tick time with a frequency of 300 Hz (every 3.33ms)
         if ((time30mhz % 100000) == 0) {
-            printf("%d\n", time30mhz);
+            printf("Time %lu\n", time30mhz);
         }
 
         dut.rootp->emu__DOT__cd_media_change = (time30mhz == 1300000);
@@ -1140,6 +1222,13 @@ class CDi {
                 }
 
                 check_scramble(lba, reinterpret_cast<uint8_t *>(hps_buffer));
+
+#if defined(TRACE) && defined(TRACE_ON_CD_REQUEST)
+                if (!do_trace) {
+                    fprintf(stderr, "Trace on by CD Request\n");
+                    do_trace = true;
+                }
+#endif
             } else {
                 // This is TOC area. Just zero all the data
                 memset(hps_buffer, 0, kSectorSize);
@@ -1353,10 +1442,11 @@ class CDi {
                 std::chrono::duration<double> elapsed_seconds_since_last_frame = current - last_frame_time;
                 last_frame_time = current;
 
-                sprintf(filename, "%d/video_%03d.bmp", instanceid, frame_index);
-                if (!WriteRgbBmp(filename, width, height, 4, output_image))
+                sprintf(filename, "%d/video_%03d.%s", instanceid, frame_index, write_png_frames ? "png" : "bmp");
+                if (write_png_frames ? !WriteRgbPng(filename, width, height, 4, output_image)
+                                     : !WriteRgbBmp(filename, width, height, 4, output_image))
                     abort();
-                printf("Written video_%03d.bmp\n", frame_index);
+                printf("Written video_%03d.%s\n", frame_index, write_png_frames ? "png" : "bmp");
                 // printf("We are at time30mhz=%ld\n", time30mhz);
 
                 uint32_t mpeg_frequency = mpeg_clk_calc_ticks * 30 / mpeg_clk_calc_ticks30;
@@ -1460,7 +1550,7 @@ class CDi {
             if (dut.rootp->emu__DOT__cditop__DOT__vmpeg_inst__DOT__fmv_packet_body) {
                 fwrite(&dut.rootp->emu__DOT__cditop__DOT__vmpeg_inst__DOT__mpeg_data, 1, 1, f_fmv_m1v);
             }
-#ifdef TRACE
+#if defined(TRACE) && defined(TRACE_ON_FMV)
             if (!do_trace && !do_trace_started_once_via_fmv) {
                 fprintf(stderr, "Trace on by FMV!\n");
                 do_trace = true;
@@ -1474,7 +1564,7 @@ class CDi {
             if (dut.rootp->emu__DOT__cditop__DOT__vmpeg_inst__DOT__fma_packet_body) {
                 fwrite(&dut.rootp->emu__DOT__cditop__DOT__vmpeg_inst__DOT__mpeg_data, 1, 1, f_fma_mp2);
             }
-#ifdef TRACE
+#if defined(TRACE) && defined(TRACE_ON_FMA)
             if (!do_trace && !do_trace_started_once_via_fma) {
                 fprintf(stderr, "Trace on via FMA!\n");
                 do_trace = true;
@@ -1483,7 +1573,7 @@ class CDi {
 #endif
         }
 
-        if (pixel_index < size - 6) {
+        if (pixel_index < size) {
             uint8_t r, g, b;
 
             r = g = b = 30;
@@ -1656,7 +1746,7 @@ class CDi {
 
         start_time = std::chrono::system_clock::now();
         last_frame_time = std::chrono::system_clock::now();
-#ifdef TRACE
+#if defined(TRACE) && !defined(TRACE_FROM_START)
         do_trace = false;
         fprintf(stderr, "Trace off on start!\n");
 #endif
@@ -1749,6 +1839,7 @@ int main(int argc, char **argv) {
     int machineindex = 0;
     int positional_arguments = 0;
     bool autoplay{false};
+    bool write_png_frames{false};
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--events") == 0) {
@@ -1771,8 +1862,10 @@ int main(int argc, char **argv) {
             udp_port = static_cast<uint16_t>(port);
         } else if (strcmp(argv[i], "--auto") == 0) {
             autoplay = true;
+        } else if (strcmp(argv[i], "--png") == 0) {
+            write_png_frames = true;
         } else if (strcmp(argv[i], "--help") == 0) {
-            fprintf(stderr, "Usage: %s [machine] [--auto] [--events script] [--udp port]\n", argv[0]);
+            fprintf(stderr, "Usage: %s [machine] [--auto] [--png] [--events script] [--udp port]\n", argv[0]);
             return 0;
         } else if (positional_arguments++ == 0) {
             machineindex = atoi(argv[i]);
@@ -1805,42 +1898,42 @@ int main(int argc, char **argv) {
 
     switch (machineindex) {
     case 0:
-        f_cd_bin = fopen("images/addams.bin", "rb");
+        mount_image("images/addams.bin");
         break;
     case 1:
-        f_cd_bin = fopen("images/aims_frogs.iso", "rb");
+        mount_image("images/aims_frogs.iso");
         prepare_artificial_audiocd_toc();
         break;
     case 2:
-        f_cd_bin = fopen("images/LuckyLuke.bin", "rb");
-        prepare_lucky_luke_europe_toc();
+        mount_image("images/CDICTEST.BIN");
         break;
     case 3:
-        f_cd_bin = fopen("images/Zelda Wand of Gamelon.bin", "rb");
+        mount_image("images/Zelda Wand of Gamelon.bin");
         break;
     case 4:
-        f_cd_bin = fopen("images/christ_country.bin", "rb");
+        mount_image("images/christ_country.bin");
         break;
     case 5:
-        f_cd_bin = fopen("images/startrek.bin", "rb");
+        mount_image("images/lost_ride.bin");
         break;
     case 6:
-        f_cd_bin = fopen("images/FMVTEST.BIN", "rb");
+        mount_image("images/FMVTEST.BIN");
         break;
     case 7:
-        f_cd_bin = fopen("images/FMVTEST.BIN", "rb");
+        mount_image("images/FMVTEST.BIN");
         break;
     case 8:
-        f_cd_bin = fopen("images/Dragon_s_Lair_US.bin", "rb");
+        mount_image("images/Dragon_s_Lair_US.bin");
         break;
     case 9:
-        f_cd_bin = fopen("images/space_ace_eu.bin", "rb");
+        mount_image("images/space_ace_eu.bin");
         break;
     }
 
-    assert(f_cd_bin);
-
     CDi machine(machineindex);
+
+    if (write_png_frames)
+        machine.EnablePngFrames();
 
     if (event_script && !machine.LoadEventScript(event_script))
         return 1;

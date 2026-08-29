@@ -14,8 +14,9 @@ module audioplayer (
     input mem_ack,
 
     input start_playback,
-    input stop_playback,
+    input stop_playback,  /* Finish ADPCM buffer */
     input cdda_mode,
+    input abort_playback,  /* Abort playback instantly */
     input last_refreshed_buffer,
     output bit playback_active,
     output bit finished_buffer_playback,
@@ -56,6 +57,7 @@ module audioplayer (
         .sample_channel(xa_channel),
 
         .start_playback(decoder_start),
+        .abort_playback(abort_playback),
         .cdda_mode,
         .playback_coding_out(current_active_coding),
         .playback_addr(playback_request_addr),
@@ -78,6 +80,7 @@ module audioplayer (
             if (decoder_idle && !decoder_start && fifo_nearly_empty[0]) begin
                 decoder_start <= playback_active && !decoder_disable_audiomap;
                 finished_buffer_playback <= finished_buffer_playback_latched;
+                if (finished_buffer_playback_latched) $display("finished_buffer_playback");
             end
 
             // To react on audiomap activation change
@@ -194,10 +197,11 @@ module audioplayer (
             end
 
             if (audio_fifo_output_enabled && decoder_idle && !decoder_idle_q) begin
+                $display("finished_buffer_playback_latched",);
                 finished_buffer_playback_latched <= 1;
             end
 
-            if (finished_buffer_playback) begin
+            if (finished_buffer_playback || abort_playback) begin
                 finished_buffer_playback_latched <= 0;
             end
 

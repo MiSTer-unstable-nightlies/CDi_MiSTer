@@ -336,6 +336,24 @@ XA 4 BPS doubles the the interval compared to 8 BPS
     4          4 BPS    Stereo       37.8 kHz
     8          4 BPS    Mono         37.8 kHz
 
+## Available codes according to the Green Book
+
+Duration of 1 ADPCM buffer:
+
+    N  Sector Interleaving
+    b  Bits per Sample
+    fs Sampling rate in kHz
+    t  Duration of one buffer in ms
+
+                     N   b  fs    Header Coding  t
+    CDDA             1   16 44.1       N/A       13.33
+    Level A Stereo   2   8  37.8  00010001 0x11  26.67   Abort to 26ms
+    Level A Mono     4   8  37.8  00010000 0x10  53.33
+    Level B Stereo   4   4  37.8  00000001 0x01  53.33   Abort to 26ms
+    Level B Mono     8   4  37.8  00000000 0x00  106.67  
+    Level C Stereo   8   4  18.9  00000101 0x05  106.67  Abort to 26ms
+    Level C Mono     16  4  18.9  00000100 0x04  213.33  Abort to 26ms
+
 ## Experience
 
 ### Real CDI 450

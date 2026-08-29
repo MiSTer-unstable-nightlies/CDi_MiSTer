@@ -197,6 +197,7 @@ module cdic (
 
     bit  audio_start_playback  /*verilator public_flat_rd*/;
     bit  audio_stop_playback;
+    bit  audio_abort_playback;
     wire audio_playback_active  /*verilator public_flat_rd*/;
     wire finished_audio_buffer_playback;
     wire decoder_disable_audiomap;
@@ -213,6 +214,7 @@ module cdic (
 
         .start_playback(audio_start_playback),
         .stop_playback(audio_stop_playback),
+        .abort_playback(audio_abort_playback),
         .cdda_mode(read_cdda),
         .last_refreshed_buffer(data_buffer_register[0]),
         .playback_active(audio_playback_active),
@@ -356,6 +358,7 @@ module cdic (
 
         audio_start_playback <= 0;
         audio_stop_playback <= 0;
+        audio_abort_playback <= 0;
 
         if (reset_write_timecode1) write_timecode1 <= 0;
         if (reset_write_timecode2) write_timecode2 <= 0;
@@ -642,6 +645,11 @@ module cdic (
                     16'h2e: begin
                         data_buffer_register[15] <= 0;  // TODO really instant?
                         $display("CDIC Command: Update");
+
+                        // If ACHAN==0 && AUDCTL[11]==0 then we need to stop
+                        // audio instantly
+                        if (audio_channel_register != 0 && !audio_control_register[11])
+                            audio_abort_playback <= 1;
                     end
                     16'h27: begin
                         $display("CDIC Command: Fetch TOC");
@@ -775,6 +783,10 @@ module cdic (
                             audio_control_register <= din;
                             audio_start_playback <= din[11];
                             audio_stop_playback <= !din[11];
+
+                            // If ACHAN is set and audio playback is stopped, playback
+                            // must be aborted instantly and not finish the current ADPCM buffer
+                            if (audio_channel_register != 0 && !din[11]) audio_abort_playback <= 1;
                         end
                         13'h1FFE: begin  // 0x3FFC IVEC Interrupt Vector register
                             $display("CDIC Write Interrupt Vector Register %x %x", address[13:1],

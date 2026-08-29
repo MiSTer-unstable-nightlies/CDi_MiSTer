@@ -17,8 +17,8 @@ main:
 
 	move.w #$2480,$303FFC ; IRQ vector
 	
-	move.w #$0004,$30280a ; 1 channels, 4 bits,
-	move.w #$0004,$30320a ; 1 channels, 4 bits,
+	move.w #$0005,$30280a ; 1 channels, 4 bits,
+	move.w #$0005,$30320a ; 1 channels, 4 bits,
 
 	jsr movedata
 
@@ -31,6 +31,7 @@ play_audiomap:
 	jsr waitforirq
 
 	; Stop Audiomap, no IRQ expected, because stopped using Audio Control Write
+	move.w #1,$303C0C ; Audio Channel Register
 	move.w #$0,$303FFA 
 
 	jsr waitforirq
@@ -42,7 +43,7 @@ movedata:
 	; Move first sector to ADPCM memory
 	move.b d0,$80004000 ; reset status
 	move.l #frogfeast_ribbit,$8000400c ; Memory Address Counter
-	move.w #2304,$8000400a  ; Size is one sector
+	move.w #2304/2,$8000400a  ; Size is one sector
 	move.b #$12,$80004005 ; Mem. to Dev., 16 Bit Words, 
 	move.b #$80,$80004007 ; start DMA
 	move.w #$e80c,$303FF8 ; DMA Control Register = Start Transmission at 280C
@@ -59,7 +60,7 @@ movedata:
 	; Move second sector to ADPCM memory
 	move.b d0,$80004000 ; reset status
 	move.l #(frogfeast_ribbit+2304),$8000400c ; Memory Address Counter
-	move.w #2304,$8000400a  ; Size is one sector
+	move.w #2304/2,$8000400a  ; Size is one sector
 	move.b #$12,$80004005 ; Mem. to Dev., 16 Bit Words, 
 	move.b #$80,$80004007 ; start DMA
 	move.w #$F20C,$303FF8 ; DMA Control Register = Start Transmission at 320C
