@@ -337,7 +337,7 @@ module emu (
     bit [1:0] debug_force_video_plane = 0;
     bit enable_reset_on_nvram_img_mount = 0;
     bit enable_reset_on_cd_img_mount = 0;
-    bit [1:0] debug_limited_to_full = 0;
+    bit [1:0] debug_limited_to_full  /*verilator public_flat_rw */ = 0;
     bit audio_cd_in_tray  /*verilator public_flat_rw */ = 0;
     bit config_disable_cpu_starve  /*verilator public_flat_rw */ = 1;
     bit config_auto_play  /*verilator public_flat_rw */ = 1;

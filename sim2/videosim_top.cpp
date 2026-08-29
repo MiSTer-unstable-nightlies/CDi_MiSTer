@@ -511,7 +511,7 @@ class CDi {
             pixel_index = 0;
         }
 
-        if (pixel_index < size - 6) {
+        if (pixel_index < size) {
             uint8_t r, g, b;
 
             r = g = b = 30;
@@ -775,6 +775,9 @@ void get_video_frame(std::string binpath, std::string pngpath) {
 
     machine.modelstep(); // To let the reset signal sink in
     machine.modelstep(); // To let the reset signal sink in
+
+    machine.dut.rootp->emu__DOT__debug_limited_to_full = 0; // Force RGB scaling 0-255
+    // machine.dut.rootp->emu__DOT__debug_limited_to_full = 1; // Force RGB scaling 16-235
 
     machine.dut.rootp->emu__DOT__cditop__DOT__mcd212_inst__DOT__command_register_dcr1 = ic1 | dc1 | cf;
     machine.dut.rootp->emu__DOT__cditop__DOT__mcd212_inst__DOT__command_register_dcr2 = ic1 | dc1;
